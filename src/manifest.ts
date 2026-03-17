@@ -111,6 +111,13 @@ const manifest: PaperclipPluginManifestV1 = {
           "Map Telegram forum topics to Paperclip projects. Requires the bot to be in a group with forum topics enabled.",
         default: DEFAULT_CONFIG.topicRouting,
       },
+      paperclipBaseUrl: {
+        type: "string",
+        title: "Paperclip Base URL",
+        description:
+          "Base URL of the Paperclip API server.",
+        default: DEFAULT_CONFIG.paperclipBaseUrl,
+      },
     },
     required: ["telegramBotTokenRef", "defaultChatId"],
   },

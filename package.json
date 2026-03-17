@@ -10,14 +10,17 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "vitest run"
   },
-  "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*",
-    "@paperclipai/shared": "workspace:*",
-    "grammy": "^1.35.0"
+  "peerDependencies": {
+    "@paperclipai/plugin-sdk": "^1.0.0",
+    "@paperclipai/shared": "^0.3.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "@paperclipai/plugin-sdk": "file:../paperclip/packages/plugins/sdk",
+    "@paperclipai/shared": "file:../paperclip/packages/shared",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

@@ -4,6 +4,8 @@ import {
   type PluginContext,
   type PluginEvent,
   type PluginHealthDiagnostics,
+  type Agent,
+  type Issue,
 } from "@paperclipai/plugin-sdk";
 import {
   sendMessage,
@@ -20,7 +22,7 @@ import {
   formatAgentRunStarted,
   formatAgentRunFinished,
 } from "./formatters.js";
-import { handleCommand, BOT_COMMANDS } from "./commands.js";
+import { handleCommand, getTopicForProject, BOT_COMMANDS } from "./commands.js";
 import { METRIC_NAMES } from "./constants.js";
 
 type TelegramConfig = {
@@ -28,6 +30,7 @@ type TelegramConfig = {
   defaultChatId: string;
   approvalsChatId: string;
   errorsChatId: string;
+  paperclipBaseUrl: string;
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
   notifyOnApprovalCreated: boolean;
@@ -86,6 +89,7 @@ const plugin = definePlugin({
     const rawConfig = await ctx.config.get();
     ctx.logger.info("Telegram plugin config loaded");
     const config = rawConfig as unknown as TelegramConfig;
+    const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
 
     if (!config.telegramBotTokenRef) {
       ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled");
@@ -121,12 +125,11 @@ const plugin = definePlugin({
           if (data.ok && data.result) {
             for (const update of data.result) {
               lastUpdateId = Math.max(lastUpdateId, update.update_id);
-              await handleUpdate(ctx, token, config, update);
+              await handleUpdate(ctx, token, config, update, baseUrl);
             }
           }
         } catch (err) {
           ctx.logger.error("Telegram polling error", { error: String(err) });
-          // Wait before retrying on error
           await new Promise((r) => setTimeout(r, 5000));
         }
       }
@@ -158,14 +161,25 @@ const plugin = definePlugin({
       );
       if (!chatId) return;
       const msg = formatter(event);
+
+      // Topic routing: check if event has a project mapping
+      let messageThreadId: number | undefined;
+      if (config.topicRouting) {
+        const payload = event.payload as Record<string, unknown>;
+        const projectName = payload.projectName ? String(payload.projectName) : undefined;
+        messageThreadId = await getTopicForProject(ctx, chatId, projectName);
+      }
+
+      if (messageThreadId) {
+        msg.options.messageThreadId = messageThreadId;
+      }
+
       const messageId = await sendMessage(ctx, token, chatId, msg.text, msg.options);
 
       if (messageId) {
-        // Store message-to-entity mapping for inbound reply routing
         await ctx.state.set(
           {
-            scopeKind: "plugin",
-            scopeId: "message-map",
+            scopeKind: "instance",
             stateKey: `msg_${chatId}_${messageId}`,
           },
           {
@@ -245,16 +259,51 @@ const plugin = definePlugin({
 
     if (config.dailyDigestEnabled) {
       ctx.jobs.register("telegram-daily-digest", async () => {
-        // TODO: Aggregate agent activity stats when SDK supports entity queries
-        const text = [
-          escapeMarkdownV2("📊") + " *Daily Digest*",
-          "",
-          escapeMarkdownV2("Digest will show agent activity, issue completions, and costs once the Plugin SDK exposes entity read APIs."),
-        ].join("\n");
+        try {
+          const companies = await ctx.companies.list();
+          const companyId = companies[0]?.id ?? "";
+          const agents = await ctx.agents.list({ companyId });
+          const activeAgents = agents.filter((a: Agent) => a.status === "active");
+          const issues = await ctx.issues.list({ companyId, limit: 50 });
 
-        await sendMessage(ctx, token, config.defaultChatId, text, {
-          parseMode: "MarkdownV2",
-        });
+          const now = Date.now();
+          const oneDayMs = 24 * 60 * 60 * 1000;
+          const completedToday = issues.filter((i: Issue) =>
+            i.status === "done" && i.completedAt && (now - new Date(i.completedAt).getTime()) < oneDayMs
+          );
+          const createdToday = issues.filter((i: Issue) =>
+            (now - new Date(i.createdAt).getTime()) < oneDayMs
+          );
+
+          const dateStr = new Date().toISOString().split("T")[0];
+          const lines = [
+            escapeMarkdownV2("📊") + ` *Daily Digest \\- ${escapeMarkdownV2(dateStr!)}*`,
+            "",
+            `${escapeMarkdownV2("✅")} Tasks completed: *${completedToday.length}*`,
+            `${escapeMarkdownV2("📋")} Tasks created: *${createdToday.length}*`,
+            `${escapeMarkdownV2("🤖")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
+          ];
+
+          if (activeAgents.length > 0) {
+            const topAgent = activeAgents[0]!.name;
+            lines.push(`${escapeMarkdownV2("⭐")} Top performer: *${escapeMarkdownV2(topAgent)}*`);
+          }
+
+          await sendMessage(ctx, token, config.defaultChatId, lines.join("\n"), {
+            parseMode: "MarkdownV2",
+          });
+        } catch (err) {
+          ctx.logger.error("Daily digest failed", { error: String(err) });
+          const text = [
+            escapeMarkdownV2("📊") + " *Daily Digest*",
+            "",
+            escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
+          ].join("\n");
+
+          await sendMessage(ctx, token, config.defaultChatId, text, {
+            parseMode: "MarkdownV2",
+          });
+        }
       });
     }
 
@@ -281,45 +330,40 @@ async function handleUpdate(
   token: string,
   config: TelegramConfig,
   update: TelegramUpdate,
+  baseUrl: string,
 ): Promise<void> {
-  // Handle callback queries (button clicks)
   if (update.callback_query) {
-    await handleCallbackQuery(ctx, token, update.callback_query);
+    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl);
     return;
   }
 
-  // Handle messages
-  if (!update.message?.text) return;
-
   const msg = update.message;
+  if (!msg?.text) return;
+
   const chatId = String(msg.chat.id);
   const text = msg.text;
   const threadId = msg.message_thread_id;
 
-  // Check for bot commands
   const botCommand = msg.entities?.find((e) => e.type === "bot_command" && e.offset === 0);
   if (botCommand && config.enableCommands) {
     const fullCommand = text.slice(botCommand.offset, botCommand.offset + botCommand.length);
-    // Strip leading / and @botname suffix
     const command = fullCommand.replace(/^\//, "").replace(/@.*$/, "");
     const args = text.slice(botCommand.offset + botCommand.length).trim();
-    await handleCommand(ctx, token, chatId, command, args, threadId);
+    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl);
     return;
   }
 
-  // Inbound message routing: if replying to a bot notification, route to that issue
   if (config.enableInbound && msg.reply_to_message?.from?.is_bot) {
     const replyToId = msg.reply_to_message.message_id;
     const mapping = await ctx.state.get({
-      scopeKind: "plugin",
-      scopeId: "message-map",
+      scopeKind: "instance",
       stateKey: `msg_${chatId}_${replyToId}`,
     }) as { entityId: string; entityType: string; companyId: string } | null;
 
     if (mapping && mapping.entityType === "issue") {
       try {
         await ctx.http.fetch(
-          `http://localhost:3100/api/issues/${mapping.entityId}/comments`,
+          `${baseUrl}/api/issues/${mapping.entityId}/comments`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -345,6 +389,7 @@ async function handleCallbackQuery(
   ctx: PluginContext,
   token: string,
   query: NonNullable<TelegramUpdate["callback_query"]>,
+  baseUrl: string,
 ): Promise<void> {
   const data = query.data;
   if (!data) return;
@@ -359,7 +404,7 @@ async function handleCallbackQuery(
 
     try {
       await ctx.http.fetch(
-        `http://localhost:3100/api/approvals/${approvalId}/approve`,
+        `${baseUrl}/api/approvals/${approvalId}/approve`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -369,7 +414,6 @@ async function handleCallbackQuery(
 
       await answerCallbackQuery(ctx, token, query.id, "Approved");
 
-      // Update the original message to show resolution
       if (chatId && messageId) {
         await editMessage(
           ctx,
@@ -392,7 +436,7 @@ async function handleCallbackQuery(
 
     try {
       await ctx.http.fetch(
-        `http://localhost:3100/api/approvals/${approvalId}/reject`,
+        `${baseUrl}/api/approvals/${approvalId}/reject`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

@@ -6,6 +6,7 @@ export const DEFAULT_CONFIG = {
   defaultChatId: "",
   approvalsChatId: "",
   errorsChatId: "",
+  paperclipBaseUrl: "http://localhost:3100",
   notifyOnIssueCreated: true,
   notifyOnIssueDone: true,
   notifyOnApprovalCreated: true,

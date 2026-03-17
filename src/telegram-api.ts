@@ -42,37 +42,52 @@ export async function sendMessage(
     };
   }
 
-  try {
-    const res = await ctx.http.fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await ctx.http.fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-    const data = (await res.json()) as { ok: boolean; result?: { message_id: number }; description?: string };
-    if (!data.ok) {
-      // If MarkdownV2 fails, retry as plain text
-      if (options.parseMode === "MarkdownV2") {
-        ctx.logger.warn("MarkdownV2 send failed, retrying as plain text", {
-          error: data.description,
-        });
-        return sendMessage(ctx, token, chatId, stripMarkdown(text), {
-          ...options,
-          parseMode: undefined,
-        });
+      const data = (await res.json()) as {
+        ok: boolean;
+        result?: { message_id: number };
+        description?: string;
+        parameters?: { retry_after?: number };
+      };
+
+      if (!data.ok) {
+        if (data.parameters?.retry_after && attempt < 2) {
+          const wait = data.parameters.retry_after * 1000;
+          ctx.logger.warn("Telegram rate limited, retrying", { retryAfter: data.parameters.retry_after, attempt });
+          await new Promise((r) => setTimeout(r, wait));
+          continue;
+        }
+
+        if (options.parseMode === "MarkdownV2") {
+          ctx.logger.warn("MarkdownV2 send failed, retrying as plain text", {
+            error: data.description,
+          });
+          return sendMessage(ctx, token, chatId, stripMarkdown(text), {
+            ...options,
+            parseMode: undefined,
+          });
+        }
+        ctx.logger.error("Telegram sendMessage failed", { error: data.description });
+        await ctx.metrics.write(METRIC_NAMES.failed, 1);
+        return null;
       }
-      ctx.logger.error("Telegram sendMessage failed", { error: data.description });
+
+      await ctx.metrics.write(METRIC_NAMES.sent, 1);
+      return data.result?.message_id ?? null;
+    } catch (err) {
+      ctx.logger.error("Telegram API error", { error: String(err) });
       await ctx.metrics.write(METRIC_NAMES.failed, 1);
       return null;
     }
-
-    await ctx.metrics.write(METRIC_NAMES.sent, 1);
-    return data.result?.message_id ?? null;
-  } catch (err) {
-    ctx.logger.error("Telegram API error", { error: String(err) });
-    await ctx.metrics.write(METRIC_NAMES.failed, 1);
-    return null;
   }
+  return null;
 }
 
 export async function editMessage(
@@ -171,6 +186,13 @@ const MD_ESCAPE_CHARS = /([_*\[\]()~`>#+\-=|{}.!\\])/g;
 
 export function escapeMarkdownV2(text: string): string {
   return text.replace(MD_ESCAPE_CHARS, "\\$1");
+}
+
+export function truncateAtWord(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  const truncated = text.slice(0, maxLen);
+  const lastSpace = truncated.lastIndexOf(" ");
+  return (lastSpace > maxLen * 0.7 ? truncated.slice(0, lastSpace) : truncated) + "...";
 }
 
 function stripMarkdown(text: string): string {

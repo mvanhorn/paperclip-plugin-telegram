@@ -1,5 +1,5 @@
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
-import { escapeMarkdownV2 } from "./telegram-api.js";
+import { escapeMarkdownV2, truncateAtWord } from "./telegram-api.js";
 import type { SendMessageOptions } from "./telegram-api.js";
 
 type Payload = Record<string, unknown>;
@@ -43,7 +43,7 @@ export function formatIssueCreated(event: PluginEvent): FormattedMessage {
   if (meta.length > 0) lines.push(meta.join(" \\| "));
 
   if (p.description) {
-    const desc = String(p.description).slice(0, 200);
+    const desc = truncateAtWord(String(p.description), 200);
     lines.push(`\n${esc(">")} ${esc(desc)}`);
   }
 
@@ -81,7 +81,7 @@ export function formatApprovalCreated(event: PluginEvent): FormattedMessage {
   ];
 
   if (agentName) lines.push(`Agent: ${esc(agentName)} \\| Type: ${code(approvalType)}`);
-  if (description) lines.push(`\n${esc(description.slice(0, 300))}`);
+  if (description) lines.push(`\n${esc(truncateAtWord(description, 300))}`);
 
   // Add linked issues if present
   const linkedIssues = Array.isArray(p.linkedIssues) ? p.linkedIssues as Array<Payload> : [];
@@ -121,7 +121,7 @@ export function formatAgentError(event: PluginEvent): FormattedMessage {
     text: [
       `${esc("❌")} ${bold("Agent Error")}`,
       `${bold(agentName)} ${esc("encountered an error")}`,
-      `\n${code(errorMessage.slice(0, 500))}`,
+      `\n${code(truncateAtWord(errorMessage, 500))}`,
     ].join("\n"),
     options: { parseMode: "MarkdownV2" },
   };
