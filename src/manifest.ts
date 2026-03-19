@@ -25,6 +25,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "jobs.schedule",
     "events.emit",
     "events.on",
+    "agent.tools.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -120,6 +121,35 @@ const manifest: PaperclipPluginManifestV1 = {
           "Base URL of the Paperclip API server.",
         default: DEFAULT_CONFIG.paperclipBaseUrl,
       },
+      escalationChatId: {
+        type: "string",
+        title: "Escalation Chat ID",
+        description:
+          "Telegram chat ID where escalations are sent for human review. If empty, escalations are logged but not forwarded.",
+        default: DEFAULT_CONFIG.escalationChatId,
+      },
+      escalationTimeoutMs: {
+        type: "number",
+        title: "Escalation Timeout (ms)",
+        description:
+          "How long to wait for a human response before taking the default action. Default: 900000 (15 minutes).",
+        default: DEFAULT_CONFIG.escalationTimeoutMs,
+      },
+      escalationDefaultAction: {
+        type: "string",
+        title: "Escalation Default Action",
+        description:
+          "What to do when an escalation times out: defer (do nothing), auto_reply (send suggested reply), or close.",
+        enum: ["defer", "auto_reply", "close"],
+        default: DEFAULT_CONFIG.escalationDefaultAction,
+      },
+      escalationHoldMessage: {
+        type: "string",
+        title: "Escalation Hold Message",
+        description:
+          "Message sent to the user when their conversation is escalated to a human.",
+        default: DEFAULT_CONFIG.escalationHoldMessage,
+      },
     },
     required: ["telegramBotTokenRef", "defaultChatId"],
   },
@@ -129,6 +159,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Telegram Daily Digest",
       description: "Send a daily summary of agent activity to Telegram.",
       schedule: "0 9 * * *",
+    },
+    {
+      jobKey: "check-escalation-timeouts",
+      displayName: "Check Escalation Timeouts",
+      description: "Check for timed-out escalations and apply default actions.",
+      schedule: "* * * * *",
     },
   ],
 };

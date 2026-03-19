@@ -16,6 +16,10 @@ export const DEFAULT_CONFIG = {
   dailyDigestEnabled: false,
   dailyDigestTime: "09:00",
   topicRouting: false,
+  escalationChatId: "",
+  escalationTimeoutMs: 900000,
+  escalationDefaultAction: "defer",
+  escalationHoldMessage: "Let me check on that - I'll get back to you shortly.",
 } as const;
 
 export const METRIC_NAMES = {
@@ -23,4 +27,7 @@ export const METRIC_NAMES = {
   failed: "telegram_notification_failures",
   commandsHandled: "telegram_commands_handled",
   inboundRouted: "telegram_inbound_routed",
+  escalationsCreated: "telegram_escalations_created",
+  escalationsResolved: "telegram_escalations_resolved",
+  escalationsTimedOut: "telegram_escalations_timed_out",
 } as const;

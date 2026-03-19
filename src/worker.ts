@@ -25,6 +25,9 @@ import {
 import { handleCommand, getTopicForProject, BOT_COMMANDS } from "./commands.js";
 import { routeMessageToAcp, handleAcpOutput } from "./acp-bridge.js";
 import { METRIC_NAMES } from "./constants.js";
+import { TelegramAdapter } from "./adapter.js";
+import { EscalationManager } from "./escalation.js";
+import type { EscalationEvent, EscalationResponse } from "./escalation.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -41,6 +44,10 @@ type TelegramConfig = {
   dailyDigestEnabled: boolean;
   dailyDigestTime: string;
   topicRouting: boolean;
+  escalationChatId: string;
+  escalationTimeoutMs: number;
+  escalationDefaultAction: "defer" | "auto_reply" | "close";
+  escalationHoldMessage: string;
 };
 
 type TelegramUpdate = {
@@ -320,6 +327,100 @@ const plugin = definePlugin({
       await handleAcpOutput(ctx, token, acpEvent);
     });
 
+    // --- Escalation support ---
+    const adapter = new TelegramAdapter(ctx, token);
+    const escalationManager = new EscalationManager();
+
+    ctx.events.on("escalation.created", async (event: unknown) => {
+      const escalationEvent = event as EscalationEvent;
+      if (!config.escalationChatId) {
+        ctx.logger.warn("Escalation received but no escalationChatId configured");
+        return;
+      }
+      await escalationManager.create(ctx, token, escalationEvent, config.escalationChatId);
+
+      // Send hold message to the originating chat if configured
+      if (config.escalationHoldMessage && escalationEvent.originChatId) {
+        const holdText = escapeMarkdownV2(config.escalationHoldMessage);
+        await sendMessage(ctx, token, escalationEvent.originChatId, holdText, {
+          parseMode: "MarkdownV2",
+          messageThreadId: escalationEvent.originThreadId ? Number(escalationEvent.originThreadId) : undefined,
+          replyToMessageId: escalationEvent.originMessageId ? Number(escalationEvent.originMessageId) : undefined,
+        });
+      }
+    });
+
+    // --- Register escalate_to_human tool ---
+    ctx.tools.register("escalate_to_human", {
+      description: "Escalate a conversation to a human when you cannot handle it confidently",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            enum: ["low_confidence", "explicit_request", "policy_violation", "unknown_intent"],
+            description: "Why this conversation needs human attention",
+          },
+          conversationSummary: {
+            type: "string",
+            description: "Brief summary of the conversation context and what the user needs",
+          },
+          suggestedActions: {
+            type: "array",
+            items: { type: "string" },
+            description: "Suggested actions the human responder could take",
+          },
+          suggestedReply: {
+            type: "string",
+            description: "A draft reply the human can send or modify",
+          },
+          confidenceScore: {
+            type: "number",
+            minimum: 0,
+            maximum: 1,
+            description: "How confident the agent is (0-1). Lower values indicate greater need for human help",
+          },
+        },
+        required: ["reason", "conversationSummary"],
+      },
+    }, async (params: Record<string, unknown>) => {
+      const escalationId = crypto.randomUUID();
+      const timeoutMs = config.escalationTimeoutMs || 900000;
+      const defaultAction = config.escalationDefaultAction || "defer";
+
+      await ctx.events.emit("escalation.created", {
+        escalationId,
+        agentId: String(params.agentId ?? "unknown-agent"),
+        companyId: String(params.companyId ?? ""),
+        reason: params.reason,
+        context: {
+          conversationHistory: [],
+          agentReasoning: String(params.conversationSummary ?? ""),
+          suggestedActions: (params.suggestedActions as string[]) ?? [],
+          suggestedReply: params.suggestedReply ? String(params.suggestedReply) : undefined,
+          confidenceScore: typeof params.confidenceScore === "number" ? params.confidenceScore : undefined,
+        },
+        timeout: {
+          durationMs: timeoutMs,
+          defaultAction,
+        },
+        originChatId: params.originChatId ? String(params.originChatId) : undefined,
+        originThreadId: params.originThreadId ? String(params.originThreadId) : undefined,
+        originMessageId: params.originMessageId ? String(params.originMessageId) : undefined,
+      } satisfies EscalationEvent);
+
+      return { content: JSON.stringify({ status: "escalated", escalationId }) };
+    });
+
+    // --- Escalation timeout checker job ---
+    ctx.jobs.register("check-escalation-timeouts", async () => {
+      try {
+        await escalationManager.checkTimeouts(ctx, token);
+      } catch (err) {
+        ctx.logger.error("Escalation timeout check failed", { error: String(err) });
+      }
+    });
+
     ctx.logger.info("Telegram bot plugin started");
   },
 
@@ -382,7 +483,21 @@ async function handleUpdate(
       stateKey: `msg_${chatId}_${replyToId}`,
     }) as { entityId: string; entityType: string; companyId: string } | null;
 
-    if (mapping && mapping.entityType === "issue") {
+    if (mapping && mapping.entityType === "escalation") {
+      const escalationManager = new EscalationManager();
+      const responderId = `telegram:${msg.from?.username ?? msg.from?.id ?? chatId}`;
+      await escalationManager.respond(ctx, token, mapping.entityId, {
+        escalationId: mapping.entityId,
+        responderId,
+        responseText: text,
+        action: "reply_to_customer",
+      });
+      await ctx.metrics.write(METRIC_NAMES.inboundRouted, 1);
+      ctx.logger.info("Routed Telegram reply to escalation", {
+        escalationId: mapping.entityId,
+        from: msg.from?.username,
+      });
+    } else if (mapping && mapping.entityType === "issue") {
       try {
         await ctx.http.fetch(
           `${baseUrl}/api/issues/${mapping.entityId}/comments`,
@@ -449,6 +564,26 @@ async function handleCallbackQuery(
     } catch (err) {
       await answerCallbackQuery(ctx, token, query.id, `Failed: ${String(err)}`);
     }
+    return;
+  }
+
+  if (data.startsWith("esc_")) {
+    const parts = data.split("_");
+    // Format: esc_{action}_{escalationId}
+    const action = parts[1] ?? "";
+    const escalationId = parts.slice(2).join("_");
+    const escalationManager = new EscalationManager();
+    await escalationManager.handleCallback(
+      ctx,
+      token,
+      action,
+      escalationId,
+      actor,
+      query.id,
+      chatId,
+      messageId,
+    );
+    await answerCallbackQuery(ctx, token, query.id, `Escalation: ${action}`);
     return;
   }
 
