@@ -104,13 +104,24 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
   -d '{"packageName":"paperclip-plugin-telegram"}'
 ```
 
-### 4. Configure
+### 4. Store your bot token as a Paperclip secret
+
+The bot token field requires a Paperclip secret reference (a UUID), not the raw token.
+
+1. In Paperclip, go to **Settings → Secrets → Create new secret**
+2. Paste your Telegram bot token as the secret value and save
+3. Copy the UUID of the created secret
+4. Use that UUID in the `telegramBotTokenRef` field below
+
+Do the same for `transcriptionApiKeyRef` if you want Whisper transcription.
+
+### 5. Configure
 
 In your Paperclip instance settings, configure:
 
 | Setting | Required | Description |
 |---------|----------|-------------|
-| `telegramBotTokenRef` | Yes | Secret reference to your bot token |
+| `telegramBotTokenRef` | Yes | Secret UUID for your bot token (see step 4) |
 | `defaultChatId` | Yes | Chat ID for notifications |
 | `approvalsChatId` | No | Separate chat for approvals |
 | `errorsChatId` | No | Separate chat for errors |
@@ -128,7 +139,7 @@ In your Paperclip instance settings, configure:
 | `maxSuggestionsPerHourPerCompany` | No | Rate limit for proactive suggestions (default: 10) |
 | `watchDeduplicationWindowMs` | No | Window before same watch+entity can re-fire (default: 86400000 / 24h) |
 
-### 5. Add bot to group (optional)
+### 6. Add bot to group (optional)
 
 If using a group chat:
 1. Add the bot to your Telegram group
@@ -174,6 +185,20 @@ When a user replies to a bot notification, the plugin looks up which Paperclip e
 | Custom commands | No | Importable multi-step workflows |
 | Proactive suggestions | No | Watch conditions with built-in sales templates |
 | Architecture | Monorepo example | Standalone npm package |
+
+## Migration
+
+### v0.2.1
+
+The `telegramBotTokenRef` and `transcriptionApiKeyRef` fields now require a Paperclip secret reference (a UUID), not the raw token value. If you previously entered your raw bot token in the field, follow these steps to migrate:
+
+1. Go to **Settings → Secrets → Create new secret**
+2. Paste your Telegram bot token as the secret value and save
+3. Copy the resulting UUID
+4. Open **Plugin Settings for Telegram Bot** and paste the UUID into "Telegram Bot Token"
+5. Save and restart the plugin
+
+The plugin will fail to activate if a raw token (non-UUID) is entered in the field.
 
 ## Development
 

@@ -39,9 +39,10 @@ const manifest: PaperclipPluginManifestV1 = {
     properties: {
       telegramBotTokenRef: {
         type: "string",
+        format: "secret-ref",
         title: "Telegram Bot Token (secret reference)",
         description:
-          "Reference to the Telegram Bot token stored in your secret provider. Get one from @BotFather.",
+          "Secret UUID for your Telegram Bot token. Create the secret in Settings → Secrets, then paste its UUID here. Get a token from @BotFather.",
         default: DEFAULT_CONFIG.telegramBotTokenRef,
       },
       defaultChatId: {
@@ -176,8 +177,9 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       transcriptionApiKeyRef: {
         type: "string",
+        format: "secret-ref",
         title: "Transcription API Key (secret reference)",
-        description: "Reference to OpenAI API key for Whisper transcription of voice/audio messages.",
+        description: "Secret UUID for your OpenAI API key used for Whisper transcription. Create the secret in Settings → Secrets, then paste its UUID here.",
         default: DEFAULT_CONFIG.transcriptionApiKeyRef,
       },
       maxSuggestionsPerHourPerCompany: {
