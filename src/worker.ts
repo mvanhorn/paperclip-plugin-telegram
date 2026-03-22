@@ -119,8 +119,8 @@ async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<str
   const mapping = await ctx.state.get({
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
-  }) as { companyName: string } | null;
-  return mapping?.companyName ?? chatId;
+  }) as { companyId?: string; companyName?: string } | null;
+  return mapping?.companyId ?? mapping?.companyName ?? chatId;
 }
 
 const plugin = definePlugin({

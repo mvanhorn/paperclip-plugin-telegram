@@ -253,30 +253,52 @@ async function handleConnect(
   ctx: PluginContext,
   token: string,
   chatId: string,
-  companyName: string,
+  companyArg: string,
   messageThreadId?: number,
 ): Promise<void> {
-  if (!companyName.trim()) {
-    await sendMessage(ctx, token, chatId, "Usage: /connect <company-name>", {
+  if (!companyArg.trim()) {
+    await sendMessage(ctx, token, chatId, "Usage: /connect <company-name-or-id>", {
       messageThreadId,
     });
     return;
   }
 
+  const input = companyArg.trim();
+  const companies = await ctx.companies.list();
+  // Match by ID, name (case-insensitive), or shortname prefix
+  const match = companies.find(
+    (c) =>
+      c.id === input ||
+      c.name?.toLowerCase() === input.toLowerCase() ||
+      c.shortname?.toLowerCase() === input.toLowerCase(),
+  );
+
+  if (!match) {
+    const available = companies.map((c) => c.name || c.id).join(", ");
+    await sendMessage(
+      ctx,
+      token,
+      chatId,
+      `Company not found: "${input}". Available: ${available}`,
+      { messageThreadId },
+    );
+    return;
+  }
+
   await ctx.state.set(
     { scopeKind: "instance", stateKey: `chat_${chatId}` },
-    { companyName: companyName.trim(), linkedAt: new Date().toISOString() },
+    { companyId: match.id, companyName: match.name ?? input, linkedAt: new Date().toISOString() },
   );
 
   await sendMessage(
     ctx,
     token,
     chatId,
-    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2("Linked this chat to company:")} *${escapeMarkdownV2(companyName.trim())}*`,
+    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2("Linked this chat to company:")} *${escapeMarkdownV2(match.name ?? input)}*`,
     { parseMode: "MarkdownV2", messageThreadId },
   );
 
-  ctx.logger.info("Chat linked to company", { chatId, companyName: companyName.trim() });
+  ctx.logger.info("Chat linked to company", { chatId, companyId: match.id, companyName: match.name });
 }
 
 export async function handleConnectTopic(
@@ -341,6 +363,6 @@ async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<str
   const mapping = await ctx.state.get({
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
-  }) as { companyName: string } | null;
-  return mapping?.companyName ?? chatId;
+  }) as { companyId?: string; companyName?: string } | null;
+  return mapping?.companyId ?? mapping?.companyName ?? chatId;
 }
