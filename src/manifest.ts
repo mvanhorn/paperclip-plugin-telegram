@@ -37,19 +37,36 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: {
     type: "object",
     properties: {
+      // --- Connection ---
       telegramBotTokenRef: {
         type: "string",
         format: "secret-ref",
         title: "Telegram Bot Token (secret reference)",
         description:
-          "Secret UUID for your Telegram Bot token. Create the secret in Settings → Secrets, then paste its UUID here. Get a token from @BotFather.",
+          "Secret UUID for your Telegram Bot token. Create the secret in Settings > Secrets, then paste its UUID here. Get a token from @BotFather.",
         default: DEFAULT_CONFIG.telegramBotTokenRef,
       },
+      paperclipBaseUrl: {
+        type: "string",
+        title: "Paperclip API URL (internal)",
+        description:
+          "Internal URL of the Paperclip API server. Used for API calls (approvals, comments). Keep as localhost for same-server deployments.",
+        default: DEFAULT_CONFIG.paperclipBaseUrl,
+      },
+      paperclipPublicUrl: {
+        type: "string",
+        title: "Paperclip Public URL",
+        description:
+          "Public URL for issue links in Telegram messages (e.g. https://pc.example.com). Falls back to API URL if empty.",
+        default: DEFAULT_CONFIG.paperclipPublicUrl,
+      },
+
+      // --- Chat routing ---
       defaultChatId: {
         type: "string",
-        title: "Default Chat ID",
+        title: "Default Chat ID (fallback)",
         description:
-          "Telegram chat ID to send notifications to. Use a group chat ID (negative number) or a user chat ID.",
+          "Fallback Telegram chat ID for notifications when no per-company chat is configured. Use /connect in a chat to set per-company routing.",
         default: DEFAULT_CONFIG.defaultChatId,
       },
       approvalsChatId: {
@@ -66,6 +83,22 @@ const manifest: PaperclipPluginManifestV1 = {
           "Chat ID for agent error notifications. Falls back to default chat.",
         default: DEFAULT_CONFIG.errorsChatId,
       },
+      escalationChatId: {
+        type: "string",
+        title: "Escalation Chat ID",
+        description:
+          "Telegram chat ID where escalations are sent for human review. If empty, escalations are logged but not forwarded.",
+        default: DEFAULT_CONFIG.escalationChatId,
+      },
+      topicRouting: {
+        type: "boolean",
+        title: "Forum topic routing",
+        description:
+          "Map Telegram forum topics to Paperclip projects. Requires the bot to be in a group with forum topics enabled.",
+        default: DEFAULT_CONFIG.topicRouting,
+      },
+
+      // --- Notifications ---
       notifyOnIssueCreated: {
         type: "boolean",
         title: "Notify on issue created",
@@ -86,6 +119,35 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on agent error",
         default: DEFAULT_CONFIG.notifyOnAgentError,
       },
+
+      // --- Digest ---
+      digestMode: {
+        type: "string",
+        title: "Digest mode",
+        description: "off = disabled, daily = once per day, bidaily = twice per day, tridaily = three times per day.",
+        enum: ["off", "daily", "bidaily", "tridaily"],
+        default: DEFAULT_CONFIG.digestMode,
+      },
+      dailyDigestTime: {
+        type: "string",
+        title: "Digest time (HH:MM UTC)",
+        description: "Time to send the digest. Used for daily mode and first slot of bidaily mode.",
+        default: DEFAULT_CONFIG.dailyDigestTime,
+      },
+      bidailySecondTime: {
+        type: "string",
+        title: "Bidaily second time (HH:MM UTC)",
+        description: "Second digest time for bidaily mode.",
+        default: DEFAULT_CONFIG.bidailySecondTime,
+      },
+      tridailyTimes: {
+        type: "string",
+        title: "Tridaily times (HH:MM,HH:MM,HH:MM UTC)",
+        description: "Three comma-separated times for tridaily mode.",
+        default: DEFAULT_CONFIG.tridailyTimes,
+      },
+
+      // --- Bot interaction ---
       enableCommands: {
         type: "boolean",
         title: "Enable bot commands",
@@ -100,39 +162,8 @@ const manifest: PaperclipPluginManifestV1 = {
           "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue.",
         default: DEFAULT_CONFIG.enableInbound,
       },
-      dailyDigestEnabled: {
-        type: "boolean",
-        title: "Daily digest",
-        description: "Send a daily summary of agent activity.",
-        default: DEFAULT_CONFIG.dailyDigestEnabled,
-      },
-      dailyDigestTime: {
-        type: "string",
-        title: "Digest time (HH:MM UTC)",
-        description: "Time to send the daily digest in UTC.",
-        default: DEFAULT_CONFIG.dailyDigestTime,
-      },
-      topicRouting: {
-        type: "boolean",
-        title: "Forum topic routing",
-        description:
-          "Map Telegram forum topics to Paperclip projects. Requires the bot to be in a group with forum topics enabled.",
-        default: DEFAULT_CONFIG.topicRouting,
-      },
-      paperclipBaseUrl: {
-        type: "string",
-        title: "Paperclip Base URL",
-        description:
-          "Base URL of the Paperclip API server.",
-        default: DEFAULT_CONFIG.paperclipBaseUrl,
-      },
-      escalationChatId: {
-        type: "string",
-        title: "Escalation Chat ID",
-        description:
-          "Telegram chat ID where escalations are sent for human review. If empty, escalations are logged but not forwarded.",
-        default: DEFAULT_CONFIG.escalationChatId,
-      },
+
+      // --- Escalation ---
       escalationTimeoutMs: {
         type: "number",
         title: "Escalation Timeout (ms)",
@@ -155,6 +186,8 @@ const manifest: PaperclipPluginManifestV1 = {
           "Message sent to the user when their conversation is escalated to a human.",
         default: DEFAULT_CONFIG.escalationHoldMessage,
       },
+
+      // --- Agent sessions ---
       maxAgentsPerThread: {
         type: "number",
         title: "Max Agents Per Thread",
@@ -162,6 +195,8 @@ const manifest: PaperclipPluginManifestV1 = {
           "Maximum number of concurrent agent sessions allowed in a single thread.",
         default: MAX_AGENTS_PER_THREAD,
       },
+
+      // --- Media pipeline ---
       briefAgentId: {
         type: "string",
         title: "Brief Agent ID",
@@ -179,9 +214,11 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "string",
         format: "secret-ref",
         title: "Transcription API Key (secret reference)",
-        description: "Secret UUID for your OpenAI API key used for Whisper transcription. Create the secret in Settings → Secrets, then paste its UUID here.",
+        description: "Secret UUID for your OpenAI API key used for Whisper transcription. Create the secret in Settings > Secrets, then paste its UUID here.",
         default: DEFAULT_CONFIG.transcriptionApiKeyRef,
       },
+
+      // --- Proactive watches ---
       maxSuggestionsPerHourPerCompany: {
         type: "number",
         title: "Max Suggestions per Hour per Company",
@@ -195,14 +232,14 @@ const manifest: PaperclipPluginManifestV1 = {
         default: DEFAULT_CONFIG.watchDeduplicationWindowMs,
       },
     },
-    required: ["telegramBotTokenRef", "defaultChatId"],
+    required: ["telegramBotTokenRef"],
   },
   jobs: [
     {
       jobKey: "telegram-daily-digest",
-      displayName: "Telegram Daily Digest",
-      description: "Send a daily summary of agent activity to Telegram.",
-      schedule: "0 9 * * *",
+      displayName: "Telegram Digest",
+      description: "Send a summary of agent activity to Telegram (daily or bidaily).",
+      schedule: "0 * * * *",
     },
     {
       jobKey: "check-escalation-timeouts",

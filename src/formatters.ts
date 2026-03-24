@@ -21,7 +21,17 @@ function code(s: string): string {
   return `\`${esc(s)}\``;
 }
 
-export function formatIssueCreated(event: PluginEvent): FormattedMessage {
+export type IssueLinksOpts = { baseUrl?: string; issuePrefix?: string };
+
+function issueLink(identifier: string, opts?: IssueLinksOpts): string {
+  if (opts?.baseUrl && opts?.issuePrefix) {
+    const url = `${opts.baseUrl}/${opts.issuePrefix}/issues/${identifier}`;
+    return `[${esc(identifier)}](${url})`;
+  }
+  return bold(identifier);
+}
+
+export function formatIssueCreated(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const identifier = String(p.identifier ?? event.entityId);
   const title = String(p.title ?? "Untitled");
@@ -31,7 +41,7 @@ export function formatIssueCreated(event: PluginEvent): FormattedMessage {
   const projectName = p.projectName ? String(p.projectName) : null;
 
   const lines: string[] = [
-    `${esc("📋")} ${bold("Issue Created")}: ${bold(identifier)}`,
+    `${esc("📋")} ${bold("Issue Created")}: ${issueLink(identifier, opts)}`,
     bold(title),
   ];
 
@@ -53,21 +63,21 @@ export function formatIssueCreated(event: PluginEvent): FormattedMessage {
   };
 }
 
-export function formatIssueDone(event: PluginEvent): FormattedMessage {
+export function formatIssueDone(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const identifier = String(p.identifier ?? event.entityId);
   const title = String(p.title ?? "");
 
   return {
     text: [
-      `${esc("✅")} ${bold("Issue Completed")}: ${bold(identifier)}`,
+      `${esc("✅")} ${bold("Issue Completed")}: ${issueLink(identifier, opts)}`,
       `${bold(title)} ${esc("is now done.")}`,
     ].join("\n"),
     options: { parseMode: "MarkdownV2" },
   };
 }
 
-export function formatApprovalCreated(event: PluginEvent): FormattedMessage {
+export function formatApprovalCreated(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const approvalType = String(p.type ?? "unknown");
   const approvalId = String(p.approvalId ?? event.entityId);
@@ -88,7 +98,8 @@ export function formatApprovalCreated(event: PluginEvent): FormattedMessage {
   if (linkedIssues.length > 0) {
     lines.push(`\n${bold(`Linked Issues (${String(linkedIssues.length)})`)}`);
     for (const issue of linkedIssues.slice(0, 5)) {
-      const issueParts = [`${bold(String(issue.identifier ?? "?"))} ${esc(String(issue.title ?? ""))}`];
+      const issueId = String(issue.identifier ?? "?");
+      const issueParts = [`${issueLink(issueId, opts)} ${esc(String(issue.title ?? ""))}`];
       const issueMeta: string[] = [];
       if (issue.status) issueMeta.push(String(issue.status));
       if (issue.priority) issueMeta.push(String(issue.priority));

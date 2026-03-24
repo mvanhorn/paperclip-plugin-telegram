@@ -34,7 +34,7 @@ export async function handleCommand(
       await handleStatus(ctx, token, chatId, messageThreadId);
       break;
     case "issues":
-      await handleIssues(ctx, token, chatId, args, messageThreadId);
+      await handleIssues(ctx, token, chatId, args, messageThreadId, baseUrl);
       break;
     case "agents":
       await handleAgents(ctx, token, chatId, messageThreadId);
@@ -101,11 +101,13 @@ async function handleIssues(
   chatId: string,
   projectFilter: string,
   messageThreadId?: number,
+  baseUrl?: string,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
 
   try {
     const companyId = await resolveCompanyId(ctx, chatId);
+    const company = await ctx.companies.get(companyId);
     const issues = await ctx.issues.list({ companyId, limit: 10 });
     const filtered = projectFilter
       ? issues.filter((i: Issue) => {
@@ -120,12 +122,16 @@ async function handleIssues(
       return;
     }
 
+    const issuePrefix = company?.issuePrefix;
     const statusEmoji: Record<string, string> = { done: "✅", todo: "📋", in_progress: "🔄", backlog: "📥" };
     const lines = [escapeMarkdownV2("📋") + " *Open Issues*", ""];
     for (const issue of filtered) {
       const emoji = statusEmoji[issue.status] ?? "📋";
       const id = issue.identifier ?? issue.id;
-      lines.push(`${escapeMarkdownV2(emoji)} ${escapeMarkdownV2(id)} \\- ${escapeMarkdownV2(issue.title)}`);
+      const idText = issuePrefix && baseUrl
+        ? `[${escapeMarkdownV2(id)}](${baseUrl}/${issuePrefix}/issues/${id})`
+        : escapeMarkdownV2(id);
+      lines.push(`${escapeMarkdownV2(emoji)} ${idText} \\- ${escapeMarkdownV2(issue.title)}`);
     }
 
     await sendMessage(ctx, token, chatId, lines.join("\n"), {
@@ -253,30 +259,51 @@ async function handleConnect(
   ctx: PluginContext,
   token: string,
   chatId: string,
-  companyName: string,
+  companyArg: string,
   messageThreadId?: number,
 ): Promise<void> {
-  if (!companyName.trim()) {
-    await sendMessage(ctx, token, chatId, "Usage: /connect <company-name>", {
+  if (!companyArg.trim()) {
+    await sendMessage(ctx, token, chatId, "Usage: /connect <company-name-or-id>", {
       messageThreadId,
     });
     return;
   }
 
+  const input = companyArg.trim();
+  const companies = await ctx.companies.list();
+  // Match by ID, name (case-insensitive), or shortname prefix
+  const match = companies.find(
+    (c) =>
+      c.id === input ||
+      c.name?.toLowerCase() === input.toLowerCase(),
+  );
+
+  if (!match) {
+    const available = companies.map((c) => c.name || c.id).join(", ");
+    await sendMessage(
+      ctx,
+      token,
+      chatId,
+      `Company not found: "${input}". Available: ${available}`,
+      { messageThreadId },
+    );
+    return;
+  }
+
   await ctx.state.set(
     { scopeKind: "instance", stateKey: `chat_${chatId}` },
-    { companyName: companyName.trim(), linkedAt: new Date().toISOString() },
+    { companyId: match.id, companyName: match.name ?? input, linkedAt: new Date().toISOString() },
   );
 
   await sendMessage(
     ctx,
     token,
     chatId,
-    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2("Linked this chat to company:")} *${escapeMarkdownV2(companyName.trim())}*`,
+    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2("Linked this chat to company:")} *${escapeMarkdownV2(match.name ?? input)}*`,
     { parseMode: "MarkdownV2", messageThreadId },
   );
 
-  ctx.logger.info("Chat linked to company", { chatId, companyName: companyName.trim() });
+  ctx.logger.info("Chat linked to company", { chatId, companyId: match.id, companyName: match.name });
 }
 
 export async function handleConnectTopic(
@@ -341,6 +368,6 @@ async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<str
   const mapping = await ctx.state.get({
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
-  }) as { companyName: string } | null;
-  return mapping?.companyName ?? chatId;
+  }) as { companyId?: string; companyName?: string } | null;
+  return mapping?.companyId ?? mapping?.companyName ?? chatId;
 }

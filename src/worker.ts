@@ -21,6 +21,7 @@ import {
   formatAgentError,
   formatAgentRunStarted,
   formatAgentRunFinished,
+  type IssueLinksOpts,
 } from "./formatters.js";
 import { handleCommand, getTopicForProject, BOT_COMMANDS } from "./commands.js";
 import {
@@ -44,14 +45,17 @@ type TelegramConfig = {
   approvalsChatId: string;
   errorsChatId: string;
   paperclipBaseUrl: string;
+  paperclipPublicUrl: string;
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
   notifyOnApprovalCreated: boolean;
   notifyOnAgentError: boolean;
   enableCommands: boolean;
   enableInbound: boolean;
-  dailyDigestEnabled: boolean;
+  digestMode: "off" | "daily" | "bidaily" | "tridaily";
   dailyDigestTime: string;
+  bidailySecondTime: string;
+  tridailyTimes: string;
   topicRouting: boolean;
   escalationChatId: string;
   escalationTimeoutMs: number;
@@ -119,8 +123,8 @@ async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<str
   const mapping = await ctx.state.get({
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
-  }) as { companyName: string } | null;
-  return mapping?.companyName ?? chatId;
+  }) as { companyId?: string; companyName?: string } | null;
+  return mapping?.companyId ?? mapping?.companyName ?? chatId;
 }
 
 const plugin = definePlugin({
@@ -129,6 +133,7 @@ const plugin = definePlugin({
     ctx.logger.info("Telegram plugin config loaded");
     const config = rawConfig as unknown as TelegramConfig;
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
+    const publicUrl = config.paperclipPublicUrl || baseUrl;
 
     if (!config.telegramBotTokenRef) {
       ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled");
@@ -193,9 +198,21 @@ const plugin = definePlugin({
 
     // --- Event subscriptions ---
 
+    const issuePrefixCache = new Map<string, string>();
+
+    async function resolveIssueLinksOpts(companyId: string): Promise<IssueLinksOpts> {
+      let prefix = issuePrefixCache.get(companyId);
+      if (!prefix) {
+        const company = await ctx.companies.get(companyId);
+        prefix = company?.issuePrefix ?? "";
+        if (prefix) issuePrefixCache.set(companyId, prefix);
+      }
+      return { baseUrl: publicUrl, issuePrefix: prefix || undefined };
+    }
+
     const notify = async (
       event: PluginEvent,
-      formatter: (e: PluginEvent) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
+      formatter: (e: PluginEvent, opts?: IssueLinksOpts) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
       overrideChatId?: string,
     ) => {
       const chatId = await resolveChat(
@@ -204,7 +221,8 @@ const plugin = definePlugin({
         overrideChatId || config.defaultChatId,
       );
       if (!chatId) return;
-      const msg = formatter(event);
+      const linksOpts = await resolveIssueLinksOpts(event.companyId);
+      const msg = formatter(event, linksOpts);
 
       let messageThreadId: number | undefined;
       if (config.topicRouting) {
@@ -252,14 +270,60 @@ const plugin = definePlugin({
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
         const payload = event.payload as Record<string, unknown>;
         if (payload.status !== "done") return;
+        // Enrich with title if missing (issue.updated events often omit it)
+        if (!payload.title && event.entityId) {
+          try {
+            const issue = await ctx.issues.get(event.entityId, event.companyId);
+            if (issue) payload.title = issue.title;
+          } catch { /* best effort */ }
+        }
         await notify(event, formatIssueDone);
       });
     }
 
     if (config.notifyOnApprovalCreated) {
-      ctx.events.on("approval.created", (event: PluginEvent) =>
-        notify(event, formatApprovalCreated, config.approvalsChatId),
-      );
+      ctx.events.on("approval.created", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        // Enrich with linked issue details (event only has issueIds)
+        const issueIds = Array.isArray(payload.issueIds) ? payload.issueIds as string[] : [];
+        if (issueIds.length > 0 && !payload.linkedIssues) {
+          try {
+            const issues = await Promise.all(
+              issueIds.slice(0, 5).map((id) => ctx.issues.get(id, event.companyId)),
+            );
+            payload.linkedIssues = issues
+              .filter(Boolean)
+              .map((i) => ({
+                identifier: i!.identifier,
+                title: i!.title,
+                status: i!.status,
+                priority: i!.priority,
+              }));
+            // Use first issue's title as the approval title if missing
+            if (!payload.title && issues[0]) {
+              payload.title = issues[0].identifier
+                ? `${issues[0].identifier}: ${issues[0].title}`
+                : issues[0].title;
+            }
+          } catch { /* best effort */ }
+        }
+        // Enrich agent name
+        if (payload.agentId && !payload.agentName) {
+          try {
+            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+            if (agent) payload.agentName = agent.name;
+          } catch { /* best effort */ }
+        }
+        // Build a meaningful title if still missing
+        if (!payload.title || payload.title === "Approval Requested") {
+          const approvalType = String(payload.type ?? "unknown").replace(/_/g, " ");
+          const agentLabel = payload.agentName ? String(payload.agentName) : null;
+          payload.title = agentLabel
+            ? `${approvalType} — ${agentLabel}`
+            : approvalType;
+        }
+        await notify(event, formatApprovalCreated, config.approvalsChatId);
+      });
     }
 
     if (config.notifyOnAgentError) {
@@ -300,52 +364,114 @@ const plugin = definePlugin({
 
     // --- Daily digest job ---
 
-    if (config.dailyDigestEnabled) {
+    // Support legacy dailyDigestEnabled boolean
+    const effectiveDigestMode = (config as Record<string, unknown>).dailyDigestEnabled === true && config.digestMode === "off"
+      ? "daily"
+      : config.digestMode ?? "off";
+
+    if (effectiveDigestMode !== "off") {
       ctx.jobs.register("telegram-daily-digest", async () => {
-        try {
-          const companies = await ctx.companies.list();
-          const companyId = companies[0]?.id ?? "";
-          const agents = await ctx.agents.list({ companyId });
-          const activeAgents = agents.filter((a: Agent) => a.status === "active");
-          const issues = await ctx.issues.list({ companyId, limit: 50 });
+        // Check if current UTC hour matches a configured digest time
+        const nowHour = new Date().getUTCHours();
+        const nowMin = new Date().getUTCMinutes();
+        if (nowMin >= 5) return; // only fire within first 5 min of the hour
 
-          const now = Date.now();
-          const oneDayMs = 24 * 60 * 60 * 1000;
-          const completedToday = issues.filter((i: Issue) =>
-            i.status === "done" && i.completedAt && (now - new Date(i.completedAt).getTime()) < oneDayMs
-          );
-          const createdToday = issues.filter((i: Issue) =>
-            (now - new Date(i.createdAt).getTime()) < oneDayMs
-          );
+        const parseHour = (t: string) => {
+          const [h] = (t || "").split(":");
+          return parseInt(h ?? "", 10);
+        };
+        const firstHour = parseHour(config.dailyDigestTime);
+        const secondHour = parseHour(config.bidailySecondTime);
+        const tridailyHours = (config.tridailyTimes || "07:00,13:00,19:00")
+          .split(",")
+          .map((t) => parseHour(t.trim()));
 
-          const dateStr = new Date().toISOString().split("T")[0];
-          const lines = [
-            escapeMarkdownV2("\ud83d\udcca") + ` *Daily Digest \\- ${escapeMarkdownV2(dateStr!)}*`,
-            "",
-            `${escapeMarkdownV2("\u2705")} Tasks completed: *${completedToday.length}*`,
-            `${escapeMarkdownV2("\ud83d\udccb")} Tasks created: *${createdToday.length}*`,
-            `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
-          ];
+        let shouldSend = false;
+        if (effectiveDigestMode === "daily") {
+          shouldSend = nowHour === firstHour;
+        } else if (effectiveDigestMode === "bidaily") {
+          shouldSend = nowHour === firstHour || nowHour === secondHour;
+        } else if (effectiveDigestMode === "tridaily") {
+          shouldSend = tridailyHours.includes(nowHour);
+        }
+        if (!shouldSend) return;
 
-          if (activeAgents.length > 0) {
-            const topAgent = activeAgents[0]!.name;
-            lines.push(`${escapeMarkdownV2("\u2b50")} Top performer: *${escapeMarkdownV2(topAgent)}*`);
+        const companies = await ctx.companies.list();
+        for (const company of companies) {
+          const chatId = await resolveChat(ctx, company.id, config.defaultChatId);
+          if (!chatId) continue;
+
+          try {
+            const agents = await ctx.agents.list({ companyId: company.id });
+            const activeAgents = agents.filter((a: Agent) => a.status === "active");
+            const issues = await ctx.issues.list({ companyId: company.id, limit: 50 });
+
+            const now = Date.now();
+            const oneDayMs = 24 * 60 * 60 * 1000;
+            const completedToday = issues.filter((i: Issue) =>
+              i.status === "done" && i.completedAt && (now - new Date(i.completedAt).getTime()) < oneDayMs
+            );
+            const createdToday = issues.filter((i: Issue) =>
+              (now - new Date(i.createdAt).getTime()) < oneDayMs
+            );
+
+            const issuePrefix = company.issuePrefix;
+            const inProgress = issues.filter((i: Issue) => i.status === "in_progress");
+            const inReview = issues.filter((i: Issue) => i.status === "in_review");
+            const blocked = issues.filter((i: Issue) => i.status === "blocked");
+
+            const dateStr = new Date().toISOString().split("T")[0];
+            const companyLabel = company.name ? ` \\- ${escapeMarkdownV2(company.name)}` : "";
+            const digestLabel = effectiveDigestMode === "bidaily" ? "Digest" : "Daily Digest";
+            const lines = [
+              escapeMarkdownV2("\ud83d\udcca") + ` *${escapeMarkdownV2(digestLabel)}${companyLabel} \\- ${escapeMarkdownV2(dateStr!)}*`,
+              "",
+              `${escapeMarkdownV2("\u2705")} Tasks completed: *${completedToday.length}*`,
+              `${escapeMarkdownV2("\ud83d\udccb")} Tasks created: *${createdToday.length}*`,
+              `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
+            ];
+
+            if (activeAgents.length > 0) {
+              const topAgent = activeAgents[0]!.name;
+              lines.push(`${escapeMarkdownV2("\u2b50")} Top performer: *${escapeMarkdownV2(topAgent)}*`);
+            }
+
+            const formatIssueItem = (i: Issue) => {
+              const id = i.identifier ?? i.id;
+              const idText = issuePrefix
+                ? `[${escapeMarkdownV2(id)}](${publicUrl}/${issuePrefix}/issues/${id})`
+                : escapeMarkdownV2(id);
+              return `  ${idText} \\- ${escapeMarkdownV2(i.title)}`;
+            };
+
+            if (inProgress.length > 0) {
+              lines.push("", `${escapeMarkdownV2("\ud83d\udd04")} *In Progress \\(${inProgress.length}\\)*`);
+              for (const i of inProgress.slice(0, 10)) lines.push(formatIssueItem(i));
+            }
+            if (inReview.length > 0) {
+              lines.push("", `${escapeMarkdownV2("\ud83d\udd0d")} *In Review \\(${inReview.length}\\)*`);
+              for (const i of inReview.slice(0, 10)) lines.push(formatIssueItem(i));
+            }
+            if (blocked.length > 0) {
+              lines.push("", `${escapeMarkdownV2("\ud83d\udeab")} *Blocked \\(${blocked.length}\\)*`);
+              for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
+            }
+
+            await sendMessage(ctx, token, chatId, lines.join("\n"), {
+              parseMode: "MarkdownV2",
+            });
+          } catch (err) {
+            ctx.logger.error("Daily digest failed for company", { companyId: company.id, error: String(err) });
+            const text = [
+              escapeMarkdownV2("\ud83d\udcca") + " *Daily Digest*",
+              "",
+              escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
+            ].join("\n");
+
+            await sendMessage(ctx, token, chatId, text, {
+              parseMode: "MarkdownV2",
+            });
           }
-
-          await sendMessage(ctx, token, config.defaultChatId, lines.join("\n"), {
-            parseMode: "MarkdownV2",
-          });
-        } catch (err) {
-          ctx.logger.error("Daily digest failed", { error: String(err) });
-          const text = [
-            escapeMarkdownV2("\ud83d\udcca") + " *Daily Digest*",
-            "",
-            escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
-          ].join("\n");
-
-          await sendMessage(ctx, token, config.defaultChatId, text, {
-            parseMode: "MarkdownV2",
-          });
         }
       });
     }
@@ -398,7 +524,12 @@ const plugin = definePlugin({
       const timeoutMs = config.escalationTimeoutMs || 900000;
       const defaultAction = config.escalationDefaultAction || "defer";
 
-      if (!config.escalationChatId) {
+      const resolvedEscalationChatId = await resolveChat(
+        ctx,
+        runCtx.companyId,
+        config.escalationChatId,
+      );
+      if (!resolvedEscalationChatId) {
         ctx.logger.warn("Escalation received but no escalationChatId configured");
         return { error: "No escalation channel configured" };
       }
@@ -426,7 +557,7 @@ const plugin = definePlugin({
         sessionId: p.sessionId ? String(p.sessionId) : undefined,
       };
 
-      await escalationManager.create(ctx, token, escalationEvent, config.escalationChatId);
+      await escalationManager.create(ctx, token, escalationEvent, resolvedEscalationChatId);
 
       // Send hold message to the originating chat if configured
       if (config.escalationHoldMessage && escalationEvent.originChatId) {
@@ -543,9 +674,6 @@ const plugin = definePlugin({
   async onValidateConfig(config) {
     if (!config.telegramBotTokenRef || typeof config.telegramBotTokenRef !== "string") {
       return { ok: false, errors: ["telegramBotTokenRef is required"] };
-    }
-    if (!config.defaultChatId || typeof config.defaultChatId !== "string") {
-      return { ok: false, errors: ["defaultChatId is required"] };
     }
     return { ok: true };
   },

@@ -1258,8 +1258,8 @@ async function resolveCompanyIdFromChat(ctx: PluginContext, chatId: string): Pro
   const mapping = await ctx.state.get({
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
-  }) as { companyName: string } | null;
-  return mapping?.companyName ?? chatId;
+  }) as { companyId?: string; companyName?: string } | null;
+  return mapping?.companyId ?? mapping?.companyName ?? chatId;
 }
 
 function simpleHash(text: string): string {
