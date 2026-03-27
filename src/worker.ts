@@ -162,7 +162,7 @@ const plugin = definePlugin({
       while (pollingActive) {
         try {
           const res = await ctx.http.fetch(
-            `${TELEGRAM_API}/bot${token}/getUpdates?offset=${lastUpdateId + 1}&timeout=30&allowed_updates=["message","callback_query"]`,
+            `${TELEGRAM_API}/bot${token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
             { method: "GET" },
           );
           const data = (await res.json()) as {
