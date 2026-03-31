@@ -9,6 +9,7 @@ type MediaConfig = {
   briefAgentId: string;
   briefAgentChatIds: string[];
   transcriptionApiKeyRef: string;
+  transcriptionMode?: "openai" | "local" | "off";
   publicUrl?: string;
 };
 
@@ -56,9 +57,12 @@ export async function handleMediaMessage(
   let textContent = msg.caption ?? "";
 
   // Transcribe audio/voice if applicable
-  if (isAudio && config.transcriptionApiKeyRef) {
+  const transcriptionMode = config.transcriptionMode ?? (config.transcriptionApiKeyRef ? "openai" : "local");
+  if (isAudio && transcriptionMode !== "off") {
     try {
-      const transcription = await transcribeAudio(ctx, token, fileId, config.transcriptionApiKeyRef);
+      const transcription = transcriptionMode === "local"
+        ? await transcribeAudioLocal(ctx, token, fileId)
+        : await transcribeAudio(ctx, token, fileId, config.transcriptionApiKeyRef);
       if (transcription) {
         textContent = transcription;
 
@@ -209,6 +213,50 @@ async function transcribeAudio(
 
   const whisperData = (await whisperRes.json()) as { text?: string };
   return whisperData.text ?? null;
+}
+
+async function transcribeAudioLocal(
+  ctx: PluginContext,
+  botToken: string,
+  fileId: string,
+): Promise<string | null> {
+  const { execSync } = await import("child_process");
+  const path = await import("path");
+  const os = await import("os");
+  const fs = await import("fs");
+
+  const fileRes = await ctx.http.fetch(
+    `${TELEGRAM_API}/bot${botToken}/getFile?file_id=${fileId}`,
+    { method: "GET" },
+  );
+  const fileData = (await fileRes.json()) as { ok: boolean; result?: { file_path?: string } };
+  if (!fileData.ok || !fileData.result?.file_path) {
+    ctx.logger.error("Failed to get file path from Telegram", { fileId });
+    return null;
+  }
+
+  const downloadUrl = `${TELEGRAM_API}/file/bot${botToken}/${fileData.result.file_path}`;
+  const audioRes = await fetch(downloadUrl);
+  const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+
+  const tmpDir = os.tmpdir();
+  const tmpFile = path.join(tmpDir, `telegram-voice-${Date.now()}.ogg`);
+  fs.writeFileSync(tmpFile, audioBuffer);
+
+  try {
+    execSync(`whisper "${tmpFile}" --model base --language fr --output_format txt --output_dir "${tmpDir}"`, {
+      timeout: 60000,
+    });
+    const txtFile = tmpFile.replace(".ogg", ".txt");
+    const text = fs.readFileSync(txtFile, "utf8").trim();
+    try { fs.unlinkSync(tmpFile); fs.unlinkSync(txtFile); } catch {}
+    ctx.logger.info("Local whisper transcription OK", { length: text.length });
+    return text || null;
+  } catch (err) {
+    ctx.logger.error("Local whisper transcription failed", { error: String(err) });
+    try { fs.unlinkSync(tmpFile); } catch {}
+    return null;
+  }
 }
 
 function buildBriefPrompt(msg: TelegramMediaMessage, textContent: string): string {
