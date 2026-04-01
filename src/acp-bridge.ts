@@ -758,6 +758,25 @@ async function flushOutputQueue(
   }
 }
 
+// --- Markdown to Telegram HTML ---
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function markdownToTelegramHtml(text: string): string {
+  let html = escapeHtml(text);
+  // Bold: **text** → <b>text</b>
+  html = html.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  // Italic: _text_ (but not in the middle of words)
+  html = html.replace(/(?<!\w)_(.+?)_(?!\w)/g, "<i>$1</i>");
+  // Inline code: `text` → <code>text</code>
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Code blocks: ```text``` → <pre>text</pre>
+  html = html.replace(/```(?:\w*\n)?([\s\S]*?)```/g, "<pre>$1</pre>");
+  return html;
+}
+
 // --- Send labeled output ---
 
 const TELEGRAM_MAX_LENGTH = 4000; // Leave room for prefix/label overhead
@@ -799,11 +818,13 @@ async function sendLabeledOutput(
 
   for (let i = 0; i < chunks.length; i++) {
     const isLast = i === chunks.length - 1;
-    const chunkPrefix = i === 0 ? `${prefix} ${label} ` : `${prefix} ${label} `;
-    const formatted = `${chunkPrefix}${escapeMarkdownV2(chunks[i]!)}`;
+    // Convert agent Markdown to Telegram HTML for proper rendering
+    const doneEmoji = done ? "\u2705" : "\ud83e\udd16";
+    const chunkPrefix = `${doneEmoji} <b>[${escapeHtml(displayName)}]</b> `;
+    const formatted = `${chunkPrefix}${markdownToTelegramHtml(chunks[i]!)}`;
 
     const messageId = await sendMessage(ctx, token, chatId, formatted, {
-      parseMode: "MarkdownV2",
+      parseMode: "HTML",
       messageThreadId: threadId,
     });
 
