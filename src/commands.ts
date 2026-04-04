@@ -14,6 +14,8 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "agents", description: "List agents with current status" },
   { command: "approve", description: "Approve a pending request by ID" },
   { command: "help", description: "Show available commands" },
+  { command: "connect", description: "Link this chat to a Paperclip company" },
+  { command: "connect_topic", description: "Map a project to a forum topic" },
   { command: "acp", description: "Manage agent sessions (spawn, status, cancel, close)" },
   { command: "commands", description: "Manage custom workflow commands (list, import, run, delete)" },
 ];
@@ -49,7 +51,7 @@ export async function handleCommand(
     case "connect":
       await handleConnect(ctx, token, chatId, args, messageThreadId);
       break;
-    case "connect-topic":
+    case "connect_topic":
       await handleConnectTopic(ctx, token, chatId, args, messageThreadId);
       break;
     case "acp":
@@ -262,9 +264,6 @@ async function handleHelp(
     ...BOT_COMMANDS.map(
       (cmd) => `/${escapeMarkdownV2(cmd.command)} \\- ${escapeMarkdownV2(cmd.description)}`,
     ),
-    "",
-    `/${escapeMarkdownV2("connect")} \\- ${escapeMarkdownV2("Link this chat to a Paperclip company")}`,
-    `/${escapeMarkdownV2("connect-topic")} \\- ${escapeMarkdownV2("Map a project to a forum topic")}`,
   ];
 
   await sendMessage(ctx, token, chatId, lines.join("\n"), {

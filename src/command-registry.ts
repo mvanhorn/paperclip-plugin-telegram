@@ -79,7 +79,7 @@ type StepResult = {
 
 const BUILTIN_COMMANDS = new Set([
   "status", "issues", "agents", "approve", "help",
-  "connect", "connect-topic", "acp", "commands",
+  "connect", "connect_topic", "acp", "commands",
 ]);
 
 // --- Command registry ---

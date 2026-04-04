@@ -50,7 +50,7 @@ This is that plugin.
 - `/approve <id>` - Approve a pending approval
 - `/help` - Display all available commands
 - `/connect <company>` - Link this chat to a Paperclip company
-- `/connect-topic <project>` - Map a forum topic to a Paperclip project
+- `/connect_topic <project-name> <topic-id>` - Map a forum topic to a Paperclip project
 - `/acp spawn <agent>` - Start a new agent session in the current thread
 - `/acp status` - Check ACP session status
 - `/acp cancel` - Cancel a running ACP session
@@ -120,7 +120,7 @@ This is that plugin.
 - Includes: tasks completed/created, active agents, in-progress/review/blocked issues
 
 ### Forum topic routing
-- Map Telegram forum topics to Paperclip projects via `/connect-topic`
+- Map Telegram forum topics to Paperclip projects via `/connect_topic`
 - Notifications for a project are routed to its mapped topic
 - Requires a group with forum topics enabled
 

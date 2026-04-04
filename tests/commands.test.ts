@@ -126,9 +126,12 @@ describe("handleCommand", () => {
 
   it("/connect stores company mapping", async () => {
     const ctx = mockCtx();
+    (ctx.companies as unknown) = {
+      list: vi.fn().mockResolvedValue([{ id: "co-1", name: "MyCompany" }]),
+    };
     await handleCommand(ctx, "token", "123", "connect", "MyCompany");
     expect(stateStore["chat_123"]).toEqual(
-      expect.objectContaining({ companyName: "MyCompany" }),
+      expect.objectContaining({ companyId: "co-1", companyName: "MyCompany" }),
     );
   });
 
@@ -209,5 +212,7 @@ describe("BOT_COMMANDS", () => {
     expect(names).toContain("agents");
     expect(names).toContain("approve");
     expect(names).toContain("help");
+    expect(names).toContain("connect");
+    expect(names).toContain("connect_topic");
   });
 });
