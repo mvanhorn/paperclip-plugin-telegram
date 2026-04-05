@@ -150,10 +150,21 @@ const plugin = definePlugin({
         ...BOT_COMMANDS,
         { command: "commands", description: "Manage custom workflow commands" },
       ];
-      const registered = await setMyCommands(ctx, token, allCommands);
-      if (registered) {
-        ctx.logger.info("Bot commands registered with Telegram");
-      }
+      // Non-blocking init: don't hold up worker initialize on external API.
+      // The host's worker-init RPC timeout is 15s; if api.telegram.org is
+      // slow/unreachable, awaiting this call causes the worker to be SIGKILLed
+      // before setup() completes. Fire-and-forget matches pollUpdates() below.
+      setMyCommands(ctx, token, allCommands)
+        .then((registered) => {
+          if (registered) {
+            ctx.logger.info("Bot commands registered with Telegram");
+          }
+        })
+        .catch((err) => {
+          ctx.logger.error("Failed to register bot commands", {
+            error: String(err),
+          });
+        });
     }
 
     // --- Long polling for inbound messages ---
