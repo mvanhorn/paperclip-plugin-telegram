@@ -547,8 +547,14 @@ export async function routeMessageToAgent(
               if (msg.startsWith("{")) {
                 try {
                   const parsed = JSON.parse(msg);
-                  // Collect only assistant text content
-                  if (parsed.type === "assistant" && parsed.message?.content) {
+                  // Collect assistant text content from both Claude and Pi output formats.
+                  // Claude emits: { type: "assistant", message: { content: [...] } }
+                  // Pi emits:     { type: "message_end", message: { role: "assistant", content: [...] } }
+                  const isClaudeAssistant = parsed.type === "assistant" && parsed.message?.content;
+                  const isPiAssistant = parsed.type === "message_end"
+                    && parsed.message?.role === "assistant"
+                    && Array.isArray(parsed.message.content);
+                  if (isClaudeAssistant || isPiAssistant) {
                     const textParts = (parsed.message.content as any[])
                       .filter((c: any) => c.type === "text" && c.text)
                       .map((c: any) => c.text);
