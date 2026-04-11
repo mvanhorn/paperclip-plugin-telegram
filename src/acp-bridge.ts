@@ -128,7 +128,13 @@ export async function handleAcpCommand(
  * Resolve an agent by name/urlKey (case-insensitive).
  * The plugin SDK's `agents.get()` requires a UUID, so we list all agents
  * and match by name or urlKey.
+ *
+ * The SDK may return the agent UUID in `id`, `agentId`, or `_id` depending
+ * on the Paperclip version.  We pick the first field that looks like a UUID
+ * and fall back to `id` if none do (caller will get a clear error on create).
  */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function resolveAgentByName(
   ctx: PluginContext,
   name: string,
@@ -142,8 +148,23 @@ async function resolveAgentByName(
         a.name?.toLowerCase() === lower ||
         a.urlKey?.toLowerCase() === lower,
     );
-    return match ? { id: match.id, name: match.name } : null;
-  } catch {
+    if (!match) return null;
+
+    // Find the UUID — different SDK versions may use different field names
+    const candidateId = match.agentId ?? match._id ?? match.id;
+    const resolvedId = UUID_RE.test(String(candidateId)) ? String(candidateId) : String(match.id);
+
+    ctx.logger.info("Resolved agent by name", {
+      agentName: name,
+      resolvedId,
+      rawId: match.id,
+      rawAgentId: match.agentId,
+      hasUrlKey: !!match.urlKey,
+    });
+
+    return { id: resolvedId, name: match.name };
+  } catch (err) {
+    ctx.logger.error("Failed to resolve agent by name", { agentName: name, companyId, error: String(err) });
     return null;
   }
 }
@@ -212,10 +233,17 @@ async function handleAcpSpawn(
       sessionId = session.sessionId;
       transport = "native";
       ctx.logger.info("Created native agent session", { agentId, sessionId });
-    } catch {
+    } catch (err) {
+      ctx.logger.error("Native session creation failed, falling back to ACP", {
+        agentId,
+        agentName: trimmedName,
+        companyId: resolvedCompanyId,
+        error: String(err),
+      });
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
   } else {
+    ctx.logger.warn("Agent not found by name, using ACP transport", { agentName: trimmedName, companyId: resolvedCompanyId });
     sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
@@ -1007,7 +1035,10 @@ async function executeHandoff(
         });
         sessionId = session.sessionId;
         transport = "native";
-      } catch {
+      } catch (err) {
+        ctx.logger.error("Native session creation failed during handoff, falling back to ACP", {
+          agentId, targetAgent, companyId, error: String(err),
+        });
         sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       }
     } else {
@@ -1116,7 +1147,10 @@ export async function handleDiscussToolCall(
         });
         sessionId = session.sessionId;
         transport = "native";
-      } catch {
+      } catch (err) {
+        ctx.logger.error("Native session creation failed during discussion, falling back to ACP", {
+          agentId, targetAgent, companyId, error: String(err),
+        });
         sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       }
     } else {
