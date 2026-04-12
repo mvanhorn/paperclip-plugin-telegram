@@ -89,13 +89,21 @@ export function formatIssueDone(event: PluginEvent, opts?: IssueLinksOpts): Form
   const p = event.payload as Payload;
   const identifier = String(p.identifier ?? event.entityId);
   const title = String(p.title ?? "");
+  const comment = p.comment ? String(p.comment) : null;
+
+  const lines: string[] = [
+    `${esc("✅")} ${bold("Issue Completed")}: ${issueLink(identifier, opts)}`,
+    `${bold(title)} ${esc("is now done.")}`,
+  ];
+
+  if (comment) {
+    const truncated = truncateAtWord(comment, 300);
+    lines.push(`\n${esc(">")} ${esc(truncated)}`);
+  }
 
   const button = issueButton(identifier, opts);
   return {
-    text: [
-      `${esc("✅")} ${bold("Issue Completed")}: ${issueLink(identifier, opts)}`,
-      `${bold(title)} ${esc("is now done.")}`,
-    ].join("\n"),
+    text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
       ...(button ? { inlineKeyboard: [[button]] } : {}),

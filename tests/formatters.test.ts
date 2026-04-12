@@ -84,6 +84,24 @@ describe("formatIssueDone", () => {
     const msg = formatIssueDone(mockEvent({ identifier: undefined }));
     expect(msg.text).toContain("iss\\-123");
   });
+
+  it("includes comment when provided", () => {
+    const msg = formatIssueDone(mockEvent({ comment: "Board prep package completed for Q3" }));
+    expect(msg.text).toContain("Board prep package completed for Q3");
+  });
+
+  it("truncates long comments", () => {
+    const longComment = Array(80).fill("word").join(" ");
+    const msg = formatIssueDone(mockEvent({ comment: longComment }));
+    expect(msg.text).toContain("\\.\\.\\.");
+  });
+
+  it("omits comment section when no comment", () => {
+    const msg = formatIssueDone(mockEvent());
+    // Should only have the title and done line, no blockquote
+    const lines = msg.text.split("\n").filter((l: string) => l.trim());
+    expect(lines.length).toBe(2);
+  });
 });
 
 describe("formatApprovalCreated", () => {
