@@ -153,6 +153,74 @@ describe("handleCommand", () => {
     expect(sentMessages[0].text).toContain("Builder");
     expect(sentMessages[0].text).toContain("Tester");
   });
+
+  it("/create without args shows usage", async () => {
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "create", "");
+    expect(sentMessages[0].text).toContain("Usage");
+  });
+
+  it("/create creates issue then updates assignee and status to trigger wake", async () => {
+    const ctx = mockCtx();
+    (ctx.agents as unknown) = {
+      list: vi.fn().mockResolvedValue([
+        { id: "a1", name: "Builder", status: "active", role: "engineer" },
+        { id: "ceo-1", name: "Zhu Li", status: "idle", role: "ceo" },
+      ]),
+    };
+    (ctx.companies as unknown) = {
+      get: vi.fn().mockResolvedValue({ id: "co-1", name: "MyCompany", issuePrefix: "MC" }),
+    };
+    const createdIssue = { id: "i-new", identifier: "MC-99", title: "Board prep for Q1", status: "backlog" };
+    const updatedIssue = { ...createdIssue, status: "todo", assigneeAgentId: "ceo-1" };
+    (ctx.issues as unknown) = {
+      ...ctx.issues,
+      create: vi.fn().mockResolvedValue(createdIssue),
+      update: vi.fn().mockResolvedValue(updatedIssue),
+    };
+    await handleCommand(ctx, "token", "123", "create", "Board prep for Q1");
+    // Create call: NO assignee (important for wake trigger)
+    expect(ctx.issues.create).toHaveBeenCalledWith(
+      expect.not.objectContaining({ assigneeAgentId: expect.any(String) }),
+    );
+    // Update call: sets BOTH status and assignee atomically, fires issue_assigned wake
+    expect(ctx.issues.update).toHaveBeenCalledWith(
+      "i-new",
+      { status: "todo", assigneeAgentId: "ceo-1" },
+      expect.any(String),
+    );
+    expect(sentMessages[0].text).toContain("Task created");
+    expect(sentMessages[0].text).toContain("MC\\-99");
+    expect(sentMessages[0].text).toContain("Zhu Li");
+  });
+
+  it("/create works without a CEO agent", async () => {
+    const ctx = mockCtx();
+    (ctx.agents as unknown) = {
+      list: vi.fn().mockResolvedValue([
+        { id: "a1", name: "Builder", status: "active", role: "engineer" },
+      ]),
+    };
+    (ctx.companies as unknown) = {
+      get: vi.fn().mockResolvedValue({ id: "co-1", name: "MyCompany", issuePrefix: null }),
+    };
+    const createdIssue = { id: "i-new", identifier: "MC-100", title: "Some task", status: "backlog" };
+    (ctx.issues as unknown) = {
+      ...ctx.issues,
+      create: vi.fn().mockResolvedValue(createdIssue),
+      update: vi.fn().mockResolvedValue({ ...createdIssue, status: "todo" }),
+    };
+    await handleCommand(ctx, "token", "123", "create", "Some task");
+    expect(ctx.issues.create).toHaveBeenCalledWith(
+      expect.not.objectContaining({ assigneeAgentId: expect.any(String) }),
+    );
+    expect(ctx.issues.update).toHaveBeenCalledWith(
+      "i-new",
+      { status: "todo" },
+      expect.any(String),
+    );
+    expect(sentMessages[0].text).toContain("Task created");
+  });
 });
 
 describe("handleConnectTopic", () => {
