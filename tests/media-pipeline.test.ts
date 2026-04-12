@@ -24,6 +24,7 @@ vi.mock("../src/acp-bridge.js", async () => {
       const key = `sessions_${_chatId}_${_threadId}`;
       return (stateStore[key] as unknown[]) ?? [];
     }),
+    wakeAgentWithIssue: vi.fn(async () => "mock-issue-id"),
   };
 });
 
@@ -287,6 +288,8 @@ describe("Media routing to agents in threads", () => {
   });
 
   it("sends to native session when transport is native", async () => {
+    const { wakeAgentWithIssue } = await import("../src/acp-bridge.js");
+
     stateStore["sessions_456_42"] = [{
       sessionId: "s1",
       agentId: "a1",
@@ -306,7 +309,7 @@ describe("Media routing to agents in threads", () => {
       document: { file_id: "doc-1", file_name: "file.txt" },
     }, { ...defaultConfig, briefAgentChatIds: [] }, "company-1");
 
-    expect(ctx.agents.sessions.sendMessage).toHaveBeenCalled();
+    expect(wakeAgentWithIssue).toHaveBeenCalled();
   });
 });
 

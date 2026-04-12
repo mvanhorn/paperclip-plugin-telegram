@@ -1,7 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
-import { getSessions } from "./acp-bridge.js";
+import { getSessions, wakeAgentWithIssue } from "./acp-bridge.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
 
@@ -132,14 +132,13 @@ export async function handleMediaMessage(
       const prompt = `[${mediaLabel}] ${textContent || "(no caption)"}`;
 
       if (target.transport === "native") {
-        try {
-          await ctx.agents.sessions.sendMessage(target.sessionId, companyId, {
-            prompt,
-            reason: "media_message",
-          });
-        } catch (err) {
-          ctx.logger.error("Failed to send media to native session", { error: String(err) });
-        }
+        await wakeAgentWithIssue(
+          ctx,
+          target.agentId,
+          companyId,
+          prompt,
+          "media_message",
+        );
       } else {
         ctx.events.emit("acp-spawn", companyId, {
           type: "message",

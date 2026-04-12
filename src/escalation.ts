@@ -1,5 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, editMessage, escapeMarkdownV2, truncateAtWord } from "./telegram-api.js";
+import { wakeAgentWithIssue } from "./acp-bridge.js";
 
 export type EscalationReason =
   | "low_confidence"
@@ -300,16 +301,14 @@ export class EscalationManager {
 
     // Route reply back via the correct transport
     if (response.action === "reply_to_customer" && response.responseText) {
-      if (stored.transport === "native" && stored.sessionId) {
-        // Route back through native agent session
-        try {
-          await ctx.agents.sessions.sendMessage(stored.sessionId, stored.companyId, {
-            prompt: `[Human escalation response] ${response.responseText}`,
-            reason: "escalation_reply",
-          });
-        } catch (err) {
-          ctx.logger.error("Failed to route escalation reply to native session", { error: String(err) });
-        }
+      if (stored.transport === "native" && stored.agentId) {
+        await wakeAgentWithIssue(
+          ctx,
+          stored.agentId,
+          stored.companyId,
+          `[Human escalation response] ${response.responseText}`,
+          "escalation_reply",
+        );
       } else if (stored.transport === "acp" && stored.sessionId) {
         // Route back via ACP event
         ctx.events.emit("acp-spawn", stored.companyId, {
