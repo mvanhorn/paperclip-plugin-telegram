@@ -294,6 +294,18 @@ const plugin = definePlugin({
             if (issue) payload.title = issue.title;
           } catch { /* best effort */ }
         }
+        // Enrich with latest comment (completion summary)
+        if (!payload.comment && event.entityId) {
+          try {
+            const comments = await ctx.issues.listComments(event.entityId, event.companyId);
+            if (comments.length > 0) {
+              const latest = comments.reduce((a, b) =>
+                new Date(a.createdAt) > new Date(b.createdAt) ? a : b,
+              );
+              payload.comment = latest.body;
+            }
+          } catch { /* best effort */ }
+        }
         await notify(event, formatIssueDone);
       });
     }
