@@ -9,6 +9,7 @@ type BotCommand = {
 };
 
 export const BOT_COMMANDS: BotCommand[] = [
+  { command: "create", description: "Create a new task (assigned to CEO agent)" },
   { command: "status", description: "Company health: active agents, open issues" },
   { command: "issues", description: "List open issues (optionally by project)" },
   { command: "agents", description: "List agents with current status" },
@@ -33,6 +34,9 @@ export async function handleCommand(
   await ctx.metrics.write(METRIC_NAMES.commandsHandled, 1);
 
   switch (command) {
+    case "create":
+      await handleCreate(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl);
+      break;
     case "status":
       await handleStatus(ctx, token, chatId, messageThreadId, publicUrl);
       break;
@@ -338,6 +342,72 @@ async function handleConnect(
       token,
       chatId,
       `Failed to connect: ${err instanceof Error ? err.message : String(err)}`,
+      { messageThreadId },
+    );
+  }
+}
+
+async function handleCreate(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  titleArg: string,
+  messageThreadId?: number,
+  linkBaseUrl?: string,
+): Promise<void> {
+  const title = titleArg.trim();
+  if (!title) {
+    await sendMessage(ctx, token, chatId, "Usage: /create <task title>", { messageThreadId });
+    return;
+  }
+
+  await sendChatAction(ctx, token, chatId);
+
+  try {
+    const companyId = await resolveCompanyId(ctx, chatId);
+    const company = await ctx.companies.get(companyId);
+    const issuePrefix = company?.issuePrefix;
+
+    // Find the CEO agent to assign to
+    const agents = await ctx.agents.list({ companyId });
+    const ceo = agents.find((a: Agent) => a.role === "ceo" && a.status !== "paused" && a.status !== "error");
+
+    // Create the issue WITHOUT assignee first, then update with both status and assignee.
+    // This ordering is load-bearing: the issue_assigned wake only fires when the assignee
+    // *transitions* from null to an agent. If we set the assignee at creation time, there's
+    // no transition and the agent never gets woken.
+    let issue = await ctx.issues.create({ companyId, title });
+    if (ceo) {
+      issue = await ctx.issues.update(
+        issue.id,
+        { status: "todo", assigneeAgentId: ceo.id },
+        companyId,
+      );
+    } else {
+      // No CEO to assign to — still bump status to todo so it's visible in the backlog
+      issue = await ctx.issues.update(issue.id, { status: "todo" }, companyId);
+    }
+
+    const id = issue.identifier ?? issue.id;
+    const hasLink = linkBaseUrl && isExternalUrl(linkBaseUrl) && issuePrefix;
+    const idText = hasLink
+      ? `[${escapeMarkdownV2(id)}](${linkBaseUrl}/${issuePrefix}/issues/${id})`
+      : `\`${escapeMarkdownV2(id)}\``;
+    const assigneeText = ceo ? ` ${escapeMarkdownV2("→")} *${escapeMarkdownV2(ceo.name)}*` : "";
+
+    await sendMessage(
+      ctx,
+      token,
+      chatId,
+      `${escapeMarkdownV2("✅")} *Task created*: ${idText}${assigneeText}\n${escapeMarkdownV2(title)}`,
+      { parseMode: "MarkdownV2", messageThreadId },
+    );
+  } catch (err) {
+    await sendMessage(
+      ctx,
+      token,
+      chatId,
+      `Failed to create task: ${err instanceof Error ? err.message : String(err)}`,
       { messageThreadId },
     );
   }

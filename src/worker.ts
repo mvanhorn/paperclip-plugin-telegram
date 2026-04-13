@@ -294,6 +294,18 @@ const plugin = definePlugin({
             if (issue) payload.title = issue.title;
           } catch { /* best effort */ }
         }
+        // Enrich with latest comment (completion summary)
+        if (!payload.comment && event.entityId) {
+          try {
+            const comments = await ctx.issues.listComments(event.entityId, event.companyId);
+            if (comments.length > 0) {
+              const latest = comments.reduce((a, b) =>
+                new Date(a.createdAt) > new Date(b.createdAt) ? a : b,
+              );
+              payload.comment = latest.body;
+            }
+          } catch { /* best effort */ }
+        }
         await notify(event, formatIssueDone);
       });
     }
@@ -801,24 +813,20 @@ async function handleUpdate(
       });
     } else if (mapping && mapping.entityType === "issue") {
       try {
-        await ctx.http.fetch(
-          `${baseUrl}/api/issues/${mapping.entityId}/comments`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              body: text,
-              authorUserId: `telegram:${msg.from?.username ?? msg.from?.id ?? chatId}`,
-            }),
-          },
-        );
+        // Use the SDK (not ctx.http.fetch) because the plugin sandbox blocks
+        // outbound fetches to private IPs like 127.0.0.1 for SSRF protection.
+        // The SDK's createComment goes through the plugin RPC bridge instead.
+        await ctx.issues.createComment(mapping.entityId, text, mapping.companyId);
         await ctx.metrics.write(METRIC_NAMES.inboundRouted, 1);
         ctx.logger.info("Routed Telegram reply to issue comment", {
           issueId: mapping.entityId,
           from: msg.from?.username,
         });
       } catch (err) {
-        ctx.logger.error("Failed to route inbound message", { error: String(err) });
+        ctx.logger.error("Failed to route inbound message", {
+          issueId: mapping.entityId,
+          error: String(err),
+        });
       }
     }
   }
