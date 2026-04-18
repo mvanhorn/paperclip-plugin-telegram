@@ -122,6 +122,59 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on agent error",
         default: DEFAULT_CONFIG.notifyOnAgentError,
       },
+      notifyOnAgentRunStarted: {
+        type: "boolean",
+        title: "Notify on agent run started",
+        description:
+          "Forward agent.run.started events. Off by default to avoid chat flooding; board users typically only want started/finished when debugging.",
+        default: DEFAULT_CONFIG.notifyOnAgentRunStarted,
+      },
+      notifyOnAgentRunFinished: {
+        type: "boolean",
+        title: "Notify on agent run finished",
+        description:
+          "Forward agent.run.finished events. Off by default to avoid chat flooding.",
+        default: DEFAULT_CONFIG.notifyOnAgentRunFinished,
+      },
+      notifyOnIssueBlocked: {
+        type: "boolean",
+        title: "Notify on issue blocked (board users only)",
+        description:
+          "Forward issue.updated events where status transitions to 'blocked' and the issue is assigned to a board user (assigneeUserId set). Ignores issues assigned to other agents.",
+        default: DEFAULT_CONFIG.notifyOnIssueBlocked,
+      },
+      notifyOnBoardMention: {
+        type: "boolean",
+        title: "Notify on board mention in comment",
+        description:
+          "Forward issue.comment.created events when the comment body contains @<boardUsername> for any username in boardUsernames.",
+        default: DEFAULT_CONFIG.notifyOnBoardMention,
+      },
+      boardUsernames: {
+        type: "array",
+        items: { type: "string" },
+        title: "Board usernames (for @mention filter)",
+        description:
+          "List of usernames to watch for in comment bodies when notifyOnBoardMention is enabled. Match is case-insensitive, @-prefix optional in this list.",
+        default: DEFAULT_CONFIG.boardUsernames,
+      },
+
+      // --- Inbox (non-reply text -> wake agent) ---
+      inboxAgentId: {
+        type: "string",
+        title: "Inbox agent ID",
+        description:
+          "Agent ID that receives plain-text messages sent to the default (or allow-listed) chat as new issues. Leave empty to disable. Board members type a message in Telegram and the selected agent wakes up with it.",
+        default: DEFAULT_CONFIG.inboxAgentId,
+      },
+      inboxChatIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Inbox chat allow-list",
+        description:
+          "Optional chat IDs allowed to send inbox messages. Empty = only defaultChatId is allowed.",
+        default: DEFAULT_CONFIG.inboxChatIds,
+      },
 
       // --- Digest ---
       digestMode: {

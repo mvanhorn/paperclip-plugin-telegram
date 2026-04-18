@@ -23,6 +23,10 @@ import {
   formatAgentError,
   formatAgentRunStarted,
   formatAgentRunFinished,
+  formatIssueBlocked,
+  formatBoardMention,
+  commentMentionsBoard,
+  isInboxChatAllowed,
   type IssueLinksOpts,
 } from "./formatters.js";
 import { handleCommand, getTopicForProject, BOT_COMMANDS } from "./commands.js";
@@ -52,6 +56,13 @@ type TelegramConfig = {
   notifyOnIssueDone: boolean;
   notifyOnApprovalCreated: boolean;
   notifyOnAgentError: boolean;
+  notifyOnAgentRunStarted: boolean;
+  notifyOnAgentRunFinished: boolean;
+  notifyOnIssueBlocked: boolean;
+  notifyOnBoardMention: boolean;
+  boardUsernames: string[];
+  inboxAgentId: string;
+  inboxChatIds: string[];
   enableCommands: boolean;
   enableInbound: boolean;
   digestMode: "off" | "daily" | "bidaily" | "tridaily";
@@ -361,12 +372,78 @@ const plugin = definePlugin({
       );
     }
 
-    ctx.events.on("agent.run.started", (event: PluginEvent) =>
-      notify(event, formatAgentRunStarted),
-    );
-    ctx.events.on("agent.run.finished", (event: PluginEvent) =>
-      notify(event, formatAgentRunFinished),
-    );
+    if (config.notifyOnAgentRunStarted) {
+      ctx.events.on("agent.run.started", (event: PluginEvent) =>
+        notify(event, formatAgentRunStarted),
+      );
+    }
+    if (config.notifyOnAgentRunFinished) {
+      ctx.events.on("agent.run.finished", (event: PluginEvent) =>
+        notify(event, formatAgentRunFinished),
+      );
+    }
+
+    if (config.notifyOnIssueBlocked) {
+      ctx.events.on("issue.updated", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        if (payload.status !== "blocked") return;
+        // Only forward when the issue is assigned to a board user (human).
+        // We enrich from the issue record because the event payload doesn't
+        // always carry assignee fields. If we can't confirm a human assignee,
+        // skip — we don't want to spam chat for every agent-owned blocker.
+        let assigneeUserId: string | null = null;
+        let assigneeName: string | null = null;
+        let title = payload.title ? String(payload.title) : null;
+        if (event.entityId) {
+          try {
+            const issue = await ctx.issues.get(event.entityId, event.companyId);
+            if (issue) {
+              const anyIssue = issue as unknown as { assigneeUserId?: string | null; assigneeName?: string | null; title?: string };
+              assigneeUserId = anyIssue.assigneeUserId ?? null;
+              assigneeName = anyIssue.assigneeName ?? null;
+              if (!title && anyIssue.title) title = anyIssue.title;
+            }
+          } catch { /* best effort */ }
+        }
+        if (!assigneeUserId) return;
+        if (title && !payload.title) payload.title = title;
+        if (assigneeName && !payload.assigneeName) payload.assigneeName = assigneeName;
+        // Attach latest comment body as context for the blocker
+        if (!payload.comment && event.entityId) {
+          try {
+            const comments = await ctx.issues.listComments(event.entityId, event.companyId);
+            if (comments.length > 0) {
+              const latest = comments.reduce((a, b) =>
+                new Date(a.createdAt) > new Date(b.createdAt) ? a : b,
+              );
+              payload.comment = latest.body;
+            }
+          } catch { /* best effort */ }
+        }
+        await notify(event, formatIssueBlocked);
+      });
+    }
+
+    if (config.notifyOnBoardMention) {
+      ctx.events.on("issue.comment.created", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        const body = payload.body ? String(payload.body) : "";
+        const usernames = Array.isArray(config.boardUsernames) ? config.boardUsernames : [];
+        if (!commentMentionsBoard(body, usernames)) return;
+        // Enrich issue identifier / title and author username for the formatter
+        const issueId = (payload.issueId as string | undefined) ?? event.entityId;
+        if (issueId) {
+          try {
+            const issue = await ctx.issues.get(issueId, event.companyId);
+            if (issue) {
+              payload.issueIdentifier = issue.identifier;
+              payload.issueTitle = issue.title;
+            }
+          } catch { /* best effort */ }
+        }
+        await notify(event, formatBoardMention);
+      });
+    }
 
     // --- Per-company chat overrides ---
 
@@ -787,6 +864,57 @@ async function handleUpdate(
 
     // Built-in commands
     await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl);
+    return;
+  }
+
+  // --- Inbox wake: plain text from the board → new issue for the configured agent ---
+  // Fires only for top-level (non-thread, non-reply, non-command) text messages
+  // in an allow-listed chat. Creates an issue assigned to inboxAgentId so the
+  // agent wakes via the standard assignment path.
+  const isReply = !!msg.reply_to_message;
+  const isInboxEligible =
+    !!config.inboxAgentId &&
+    !threadId &&
+    !isReply &&
+    isInboxChatAllowed(chatId, config.defaultChatId ?? "", config.inboxChatIds ?? []);
+  if (isInboxEligible) {
+    const companyId = await resolveCompanyId(ctx, chatId);
+    const sender = msg.from?.username
+      ? `@${msg.from.username}`
+      : msg.from?.first_name ?? "Telegram user";
+    const shortBody = text.length > 140 ? text.slice(0, 137).trimEnd() + "…" : text;
+    const issueTitle = `[Inbox] ${shortBody.replace(/\s+/g, " ")}`;
+    const issueDescription = [
+      `From ${sender} via Telegram (chat ${chatId}, message ${msg.message_id}).`,
+      "",
+      text,
+    ].join("\n");
+    try {
+      const issue = await ctx.issues.create({
+        companyId,
+        title: issueTitle.length > 200 ? issueTitle.slice(0, 197) + "…" : issueTitle,
+        description: issueDescription,
+        assigneeAgentId: config.inboxAgentId,
+      });
+      await ctx.issues.update(issue.id, { status: "todo" }, companyId);
+      await ctx.metrics.write(METRIC_NAMES.inboundRouted, 1);
+      ctx.logger.info("Routed inbox message to agent via new issue", {
+        chatId,
+        agentId: config.inboxAgentId,
+        issueId: issue.id,
+      });
+      // Brief ack so the sender sees their message landed. Plain text to avoid
+      // MarkdownV2 escape pitfalls on arbitrary identifiers.
+      const ackLabel = issue.identifier ? String(issue.identifier) : issue.id;
+      await sendMessage(ctx, token, chatId, `Forwarded to agent — ${ackLabel}`, {});
+    } catch (err) {
+      ctx.logger.error("Failed to create inbox issue from Telegram", {
+        chatId,
+        agentId: config.inboxAgentId,
+        error: String(err),
+      });
+      await sendMessage(ctx, token, chatId, `Could not forward message: ${String(err)}`, {});
+    }
     return;
   }
 

@@ -235,3 +235,96 @@ export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts
     },
   };
 }
+
+export function formatIssueBlocked(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
+  const p = event.payload as Payload;
+  const identifier = String(p.identifier ?? event.entityId);
+  const title = String(p.title ?? "");
+  const assigneeName = p.assigneeName ? String(p.assigneeName) : null;
+  const comment = p.comment ? String(p.comment) : null;
+
+  const lines: string[] = [
+    `${esc("⛔")} ${bold("Issue Blocked")}: ${issueLink(identifier, opts)}`,
+    bold(title),
+  ];
+  if (assigneeName) lines.push(`Assignee: ${esc(assigneeName)}`);
+  if (comment) {
+    const truncated = truncateAtWord(comment, 300);
+    lines.push(`\n${esc(">")} ${esc(truncated)}`);
+  }
+
+  const button = issueButton(identifier, opts);
+  return {
+    text: lines.join("\n"),
+    options: {
+      parseMode: "MarkdownV2",
+      ...(button ? { inlineKeyboard: [[button]] } : {}),
+    },
+  };
+}
+
+export function formatBoardMention(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
+  const p = event.payload as Payload;
+  const identifier = String(p.issueIdentifier ?? p.identifier ?? p.issueId ?? event.entityId);
+  const issueTitle = p.issueTitle ? String(p.issueTitle) : null;
+  const authorName = String(p.authorName ?? p.authorUsername ?? "someone");
+  const body = p.body ? String(p.body) : "";
+
+  const lines: string[] = [
+    `${esc("💬")} ${bold("Board mentioned")} on ${issueLink(identifier, opts)}`,
+  ];
+  if (issueTitle) lines.push(bold(issueTitle));
+  lines.push(`${bold(authorName)}:`);
+  if (body) {
+    const truncated = truncateAtWord(body, 400);
+    lines.push(`${esc(">")} ${esc(truncated)}`);
+  }
+
+  const button = issueButton(identifier, opts);
+  return {
+    text: lines.join("\n"),
+    options: {
+      parseMode: "MarkdownV2",
+      ...(button ? { inlineKeyboard: [[button]] } : {}),
+    },
+  };
+}
+
+/**
+ * Returns true if `body` contains a case-insensitive @mention of any username
+ * in `usernames`. Usernames may be provided with or without the leading `@`.
+ * Match requires a word boundary after the handle (so @jonasX doesn't match @jonas).
+ */
+export function commentMentionsBoard(body: string, usernames: string[]): boolean {
+  if (!body || !Array.isArray(usernames) || usernames.length === 0) return false;
+  const haystack = body.toLowerCase();
+  for (const raw of usernames) {
+    if (!raw) continue;
+    const handle = raw.replace(/^@/, "").trim().toLowerCase();
+    if (!handle) continue;
+    const needle = "@" + handle;
+    let from = 0;
+    while (true) {
+      const idx = haystack.indexOf(needle, from);
+      if (idx < 0) break;
+      const after = haystack.charCodeAt(idx + needle.length);
+      const isWordChar = (after >= 48 && after <= 57) || (after >= 97 && after <= 122) || after === 95;
+      if (!isWordChar) return true;
+      from = idx + needle.length;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true when a chat is allowed to forward plain-text messages to the
+ * inbox agent. `defaultChatId` is always allowed; `inboxChatIds` widens the
+ * allow-list but if it contains any non-empty entry, it overrides the default
+ * (so operators can opt a subset in explicitly).
+ */
+export function isInboxChatAllowed(chatId: string, defaultChatId: string, inboxChatIds: string[]): boolean {
+  if (!chatId) return false;
+  const list = (inboxChatIds ?? []).map((id) => String(id).trim()).filter(Boolean);
+  if (list.length > 0) return list.includes(chatId);
+  return !!defaultChatId && chatId === String(defaultChatId);
+}
