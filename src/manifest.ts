@@ -121,9 +121,9 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       onlyNotifyIfAssignedTo: {
         type: "string",
-        title: "Only notify when assigned to this user",
+        title: "Only notify when assigned to this user (user ID)",
         description:
-          "Optional. If set, assignment notifications only fire when the new assigneeUserId equals this value. Useful for personal instances (\"notify me when something is assigned to me\").",
+          "Optional. Paste your Paperclip user ID here to restrict assignment notifications to items newly assigned to you. Leave empty to notify on every assignment change. To find your user ID: sign in to Paperclip in a browser and visit /api/cli-auth/me — copy the `userId` field (a string like `mrvhBEpPds85TGeEjlAHviP0VdOHgymm`).",
         default: DEFAULT_CONFIG.onlyNotifyIfAssignedTo,
       },
       notifyOnApprovalCreated: {
