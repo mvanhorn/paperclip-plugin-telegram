@@ -314,6 +314,10 @@ const plugin = definePlugin({
     }
 
     if (config.notifyOnIssueAssigned) {
+      const assignmentDedupe = new Map<string, number>();
+      const ASSIGNMENT_DEDUPE_WINDOW_MS = 5_000;
+      const ASSIGNMENT_DEDUPE_MAX_ENTRIES = 500;
+
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
         const payload = event.payload as Record<string, unknown>;
         const prev = (payload._previous as Record<string, unknown> | undefined) ?? {};
@@ -326,6 +330,26 @@ const plugin = definePlugin({
 
         if (config.onlyNotifyIfAssignedTo && payload.assigneeUserId !== config.onlyNotifyIfAssignedTo) {
           return;
+        }
+
+        const dedupeKey = [
+          event.entityId,
+          String(prev.assigneeUserId ?? ""),
+          String(payload.assigneeUserId ?? ""),
+          String(prev.assigneeAgentId ?? ""),
+          String(payload.assigneeAgentId ?? ""),
+        ].join("|");
+        const now = Date.now();
+        const lastSeen = assignmentDedupe.get(dedupeKey);
+        if (lastSeen !== undefined && now - lastSeen < ASSIGNMENT_DEDUPE_WINDOW_MS) {
+          return;
+        }
+        assignmentDedupe.set(dedupeKey, now);
+        if (assignmentDedupe.size > ASSIGNMENT_DEDUPE_MAX_ENTRIES) {
+          const cutoff = now - ASSIGNMENT_DEDUPE_WINDOW_MS;
+          for (const [key, ts] of assignmentDedupe) {
+            if (ts < cutoff) assignmentDedupe.delete(key);
+          }
         }
 
         if ((!payload.title || !payload.assigneeName) && event.entityId) {
