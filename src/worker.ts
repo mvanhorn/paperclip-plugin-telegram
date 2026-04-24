@@ -19,6 +19,7 @@ import {
 import {
   formatIssueCreated,
   formatIssueDone,
+  formatIssueAssigned,
   formatApprovalCreated,
   formatAgentError,
   formatAgentRunStarted,
@@ -50,6 +51,8 @@ type TelegramConfig = {
   paperclipPublicUrl: string;
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
+  notifyOnIssueAssigned: boolean;
+  onlyNotifyIfAssignedTo: string;
   notifyOnApprovalCreated: boolean;
   notifyOnAgentError: boolean;
   enableCommands: boolean;
@@ -307,6 +310,36 @@ const plugin = definePlugin({
           } catch { /* best effort */ }
         }
         await notify(event, formatIssueDone);
+      });
+    }
+
+    if (config.notifyOnIssueAssigned) {
+      ctx.events.on("issue.updated", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        const prev = (payload._previous as Record<string, unknown> | undefined) ?? {};
+
+        const userChanged =
+          "assigneeUserId" in payload && payload.assigneeUserId !== prev.assigneeUserId;
+        const agentChanged =
+          "assigneeAgentId" in payload && payload.assigneeAgentId !== prev.assigneeAgentId;
+        if (!userChanged && !agentChanged) return;
+
+        if (config.onlyNotifyIfAssignedTo && payload.assigneeUserId !== config.onlyNotifyIfAssignedTo) {
+          return;
+        }
+
+        if ((!payload.title || !payload.assigneeName) && event.entityId) {
+          try {
+            const issue = await ctx.issues.get(event.entityId, event.companyId);
+            if (issue) {
+              payload.title ??= issue.title;
+              const name = (issue as unknown as Record<string, unknown>).assigneeName;
+              if (name) payload.assigneeName ??= name;
+            }
+          } catch { /* best effort */ }
+        }
+
+        await notify(event, formatIssueAssigned);
       });
     }
 

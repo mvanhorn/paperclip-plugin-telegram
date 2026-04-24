@@ -10,6 +10,8 @@ export const DEFAULT_CONFIG = {
   paperclipPublicUrl: "",
   notifyOnIssueCreated: true,
   notifyOnIssueDone: true,
+  notifyOnIssueAssigned: false,
+  onlyNotifyIfAssignedTo: "",
   notifyOnApprovalCreated: true,
   notifyOnAgentError: true,
   enableCommands: true,

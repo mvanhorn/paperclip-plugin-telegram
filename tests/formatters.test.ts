@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   formatIssueCreated,
   formatIssueDone,
+  formatIssueAssigned,
   formatApprovalCreated,
   formatAgentError,
   formatAgentRunStarted,
@@ -101,6 +102,51 @@ describe("formatIssueDone", () => {
     // Should only have the title and done line, no blockquote
     const lines = msg.text.split("\n").filter((l: string) => l.trim());
     expect(lines.length).toBe(2);
+  });
+});
+
+describe("formatIssueAssigned", () => {
+  it("shows the assigned user when assigning from nobody", () => {
+    const msg = formatIssueAssigned(mockEvent({
+      assigneeUserId: "user-me",
+      assigneeName: "Nuno",
+      _previous: { assigneeUserId: null, assigneeName: null },
+    }));
+    expect(msg.text).toContain("Issue Assigned");
+    expect(msg.text).toContain("PROJ\\-42");
+    expect(msg.text).toContain("Nuno");
+    // No previous-name line
+    expect(msg.text).not.toContain("→");
+  });
+
+  it("shows 'previous → new' when reassigning from another user", () => {
+    const msg = formatIssueAssigned(mockEvent({
+      assigneeUserId: "user-me",
+      assigneeName: "Nuno",
+      _previous: { assigneeUserId: "user-other", assigneeName: "Alice" },
+    }));
+    expect(msg.text).toContain("Alice");
+    expect(msg.text).toContain("Nuno");
+    expect(msg.text).toContain("→");
+  });
+
+  it("shows 'Unassigned' when the new assignee is null", () => {
+    const msg = formatIssueAssigned(mockEvent({
+      assigneeUserId: null,
+      assigneeName: null,
+      _previous: { assigneeUserId: "user-me", assigneeName: "Nuno" },
+    }));
+    expect(msg.text).toContain("Unassigned");
+  });
+
+  it("uses MarkdownV2 parse mode", () => {
+    const msg = formatIssueAssigned(mockEvent({ assigneeName: "Nuno" }));
+    expect(msg.options.parseMode).toBe("MarkdownV2");
+  });
+
+  it("falls back to entityId when no identifier", () => {
+    const msg = formatIssueAssigned(mockEvent({ identifier: undefined, assigneeName: "Nuno" }));
+    expect(msg.text).toContain("iss\\-123");
   });
 });
 

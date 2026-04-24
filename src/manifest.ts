@@ -112,6 +112,20 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on issue completed",
         default: DEFAULT_CONFIG.notifyOnIssueDone,
       },
+      notifyOnIssueAssigned: {
+        type: "boolean",
+        title: "Notify on issue assignment changes",
+        description:
+          "Send a message when an existing issue's assigneeUserId or assigneeAgentId changes. Complements notifyOnIssueCreated (which covers initial assignment on creation).",
+        default: DEFAULT_CONFIG.notifyOnIssueAssigned,
+      },
+      onlyNotifyIfAssignedTo: {
+        type: "string",
+        title: "Only notify when assigned to this user",
+        description:
+          "Optional. If set, assignment notifications only fire when the new assigneeUserId equals this value. Useful for personal instances (\"notify me when something is assigned to me\").",
+        default: DEFAULT_CONFIG.onlyNotifyIfAssignedTo,
+      },
       notifyOnApprovalCreated: {
         type: "boolean",
         title: "Notify on approval requested",

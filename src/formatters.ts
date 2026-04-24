@@ -85,6 +85,39 @@ export function formatIssueCreated(event: PluginEvent, opts?: IssueLinksOpts): F
   };
 }
 
+export function formatIssueAssigned(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
+  const p = event.payload as Payload;
+  const prev = (p._previous as Payload | undefined) ?? {};
+  const identifier = String(p.identifier ?? event.entityId);
+  const title = String(p.title ?? "Untitled");
+  const assigneeName = p.assigneeName ? String(p.assigneeName) : null;
+  const prevAssigneeName = prev.assigneeName ? String(prev.assigneeName) : null;
+
+  const lines: string[] = [
+    `${esc("🎯")} ${bold("Issue Assigned")}: ${issueLink(identifier, opts)}`,
+    bold(title),
+  ];
+
+  if (assigneeName) {
+    lines.push(
+      prevAssigneeName
+        ? `Assignee: ${esc(prevAssigneeName)} ${esc("→")} ${esc(assigneeName)}`
+        : `Assignee: ${esc(assigneeName)}`,
+    );
+  } else {
+    lines.push(esc("Unassigned"));
+  }
+
+  const button = issueButton(identifier, opts);
+  return {
+    text: lines.join("\n"),
+    options: {
+      parseMode: "MarkdownV2",
+      ...(button ? { inlineKeyboard: [[button]] } : {}),
+    },
+  };
+}
+
 export function formatIssueDone(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const identifier = String(p.identifier ?? event.entityId);
