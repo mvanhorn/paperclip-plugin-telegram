@@ -29,6 +29,9 @@ function mockCtx(): PluginContext {
       warn: vi.fn(),
       error: vi.fn(),
     },
+    companies: {
+      get: vi.fn().mockResolvedValue({ id: "123", name: "Test Co", issuePrefix: "PROJ" }),
+    },
     agents: {
       list: vi.fn().mockResolvedValue([
         { id: "a1", name: "Builder", status: "active" },
@@ -74,6 +77,14 @@ describe("handleCommand", () => {
     const ctx = mockCtx();
     await handleCommand(ctx, "token", "123", "status", "");
     expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].text).toContain("Paperclip Status");
+  });
+
+  it("uses a resolved company id for group chat commands", async () => {
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "-1003800613668", "status", "", undefined, undefined, undefined, "co-1");
+    expect(ctx.agents.list).toHaveBeenCalledWith({ companyId: "co-1" });
+    expect(ctx.agents.list).not.toHaveBeenCalledWith({ companyId: "-1003800613668" });
     expect(sentMessages[0].text).toContain("Paperclip Status");
   });
 
