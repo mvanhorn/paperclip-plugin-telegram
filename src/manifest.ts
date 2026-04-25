@@ -165,6 +165,22 @@ const manifest: PaperclipPluginManifestV1 = {
           "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue.",
         default: DEFAULT_CONFIG.enableInbound,
       },
+      allowedTelegramUserIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Telegram User IDs",
+        description:
+          "Optional allowlist of Telegram user IDs allowed to interact with the bot. Leave empty to allow any user. Applies to commands, inbound replies, media intake, and inline button callbacks.",
+        default: DEFAULT_CONFIG.allowedTelegramUserIds,
+      },
+      allowedTelegramChatIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Telegram Chat IDs",
+        description:
+          "Optional allowlist of Telegram chat IDs where inbound bot interactions are accepted. Leave empty to allow any chat. Useful for restricting the bot to private groups and approved DMs.",
+        default: DEFAULT_CONFIG.allowedTelegramChatIds,
+      },
 
       // --- Escalation ---
       escalationTimeoutMs: {

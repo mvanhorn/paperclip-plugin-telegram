@@ -160,6 +160,8 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `paperclipPublicUrl` | No | Public URL for issue links in messages |
 | `enableCommands` | No | Enable bot commands (default: true) |
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
+| `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use inbound features and inline buttons. Empty means any user is allowed |
+| `allowedTelegramChatIds` | No | Optional allowlist of Telegram chat IDs where inbound features are accepted. Empty means any chat is allowed |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
