@@ -111,6 +111,31 @@ type TelegramUpdate = {
 
 const TELEGRAM_API = "https://api.telegram.org";
 
+/**
+ * Shared 5s sliding-window dedupe for issue.updated handlers.
+ *
+ * Paperclip's core can emit duplicate `issue.updated` plugin events for a
+ * single PATCH (the route's logActivity plus side-effects from heartbeat
+ * reconciliation), so handlers must dedupe to avoid sending the same
+ * Telegram message twice.
+ */
+function makeUpdateDedupe(windowMs = 5_000, maxEntries = 500) {
+  const seen = new Map<string, number>();
+  return (key: string): boolean => {
+    const now = Date.now();
+    const last = seen.get(key);
+    if (last !== undefined && now - last < windowMs) return false;
+    seen.set(key, now);
+    if (seen.size > maxEntries) {
+      const cutoff = now - windowMs;
+      for (const [k, ts] of seen) {
+        if (ts < cutoff) seen.delete(k);
+      }
+    }
+    return true;
+  };
+}
+
 async function resolveChat(
   ctx: PluginContext,
   companyId: string,
@@ -287,9 +312,11 @@ const plugin = definePlugin({
     }
 
     if (config.notifyOnIssueDone) {
+      const doneDedupe = makeUpdateDedupe();
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
         const payload = event.payload as Record<string, unknown>;
         if (payload.status !== "done") return;
+        if (!doneDedupe(`done|${event.entityId}`)) return;
         // Enrich with title if missing (issue.updated events often omit it)
         if (!payload.title && event.entityId) {
           try {
@@ -314,9 +341,7 @@ const plugin = definePlugin({
     }
 
     if (config.notifyOnIssueAssigned) {
-      const assignmentDedupe = new Map<string, number>();
-      const ASSIGNMENT_DEDUPE_WINDOW_MS = 5_000;
-      const ASSIGNMENT_DEDUPE_MAX_ENTRIES = 500;
+      const assignmentDedupe = makeUpdateDedupe();
 
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
         const payload = event.payload as Record<string, unknown>;
@@ -333,24 +358,14 @@ const plugin = definePlugin({
         }
 
         const dedupeKey = [
+          "assigned",
           event.entityId,
           String(prev.assigneeUserId ?? ""),
           String(payload.assigneeUserId ?? ""),
           String(prev.assigneeAgentId ?? ""),
           String(payload.assigneeAgentId ?? ""),
         ].join("|");
-        const now = Date.now();
-        const lastSeen = assignmentDedupe.get(dedupeKey);
-        if (lastSeen !== undefined && now - lastSeen < ASSIGNMENT_DEDUPE_WINDOW_MS) {
-          return;
-        }
-        assignmentDedupe.set(dedupeKey, now);
-        if (assignmentDedupe.size > ASSIGNMENT_DEDUPE_MAX_ENTRIES) {
-          const cutoff = now - ASSIGNMENT_DEDUPE_WINDOW_MS;
-          for (const [key, ts] of assignmentDedupe) {
-            if (ts < cutoff) assignmentDedupe.delete(key);
-          }
-        }
+        if (!assignmentDedupe(dedupeKey)) return;
 
         if ((!payload.title || !payload.assigneeName) && event.entityId) {
           try {
