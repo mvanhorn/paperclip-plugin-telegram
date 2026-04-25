@@ -30,21 +30,22 @@ export async function handleCommand(
   messageThreadId?: number,
   baseUrl?: string,
   publicUrl?: string,
+  companyId?: string,
 ): Promise<void> {
   await ctx.metrics.write(METRIC_NAMES.commandsHandled, 1);
 
   switch (command) {
     case "create":
-      await handleCreate(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl);
+      await handleCreate(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl, companyId);
       break;
     case "status":
-      await handleStatus(ctx, token, chatId, messageThreadId, publicUrl);
+      await handleStatus(ctx, token, chatId, messageThreadId, publicUrl, companyId);
       break;
     case "issues":
-      await handleIssues(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl);
+      await handleIssues(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl, companyId);
       break;
     case "agents":
-      await handleAgents(ctx, token, chatId, messageThreadId, publicUrl);
+      await handleAgents(ctx, token, chatId, messageThreadId, publicUrl, companyId);
       break;
     case "approve":
       await handleApprove(ctx, token, chatId, args, messageThreadId, baseUrl);
@@ -78,11 +79,12 @@ async function handleStatus(
   chatId: string,
   messageThreadId?: number,
   publicUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const agents = await ctx.agents.list({ companyId });
     const activeAgents = agents.filter((a: Agent) => a.status === "active");
     const issues = await ctx.issues.list({ companyId, limit: 10 });
@@ -119,11 +121,12 @@ async function handleIssues(
   projectFilter: string,
   messageThreadId?: number,
   baseUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const company = await ctx.companies.get(companyId);
     const issues = await ctx.issues.list({ companyId, limit: 10 });
     const filtered = projectFilter
@@ -173,11 +176,12 @@ async function handleAgents(
   chatId: string,
   messageThreadId?: number,
   publicUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const agents = await ctx.agents.list({ companyId });
 
     if (agents.length === 0) {
@@ -354,6 +358,7 @@ async function handleCreate(
   titleArg: string,
   messageThreadId?: number,
   linkBaseUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   const title = titleArg.trim();
   if (!title) {
@@ -364,7 +369,7 @@ async function handleCreate(
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const company = await ctx.companies.get(companyId);
     const issuePrefix = company?.issuePrefix;
 

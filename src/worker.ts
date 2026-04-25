@@ -916,7 +916,7 @@ async function handleUpdate(
     if (handledCustom) return;
 
     // Built-in commands
-    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl);
+    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId);
     return;
   }
 

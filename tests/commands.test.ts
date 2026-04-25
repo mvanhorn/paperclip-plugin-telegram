@@ -91,6 +91,14 @@ describe("handleCommand", () => {
     expect(sentMessages[0].text).toContain("Paperclip Status");
   });
 
+  it("uses a resolved company id for group chat commands", async () => {
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "-1003800613668", "status", "", undefined, undefined, undefined, "co-1");
+    expect(ctx.agents.list).toHaveBeenCalledWith({ companyId: "co-1" });
+    expect(ctx.agents.list).not.toHaveBeenCalledWith({ companyId: "-1003800613668" });
+    expect(sentMessages[0].text).toContain("Paperclip Status");
+  });
+
   it("routes /issues command", async () => {
     const ctx = mockCtx();
     await handleCommand(ctx, "token", "123", "issues", "");
