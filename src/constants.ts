@@ -16,6 +16,8 @@ export const DEFAULT_CONFIG = {
   notifyOnAgentError: true,
   enableCommands: true,
   enableInbound: true,
+  allowedTelegramUserIds: [] as string[],
+  allowedTelegramChatIds: [] as string[],
   digestMode: "off" as "off" | "daily" | "bidaily" | "tridaily",
   dailyDigestTime: "09:00",
   bidailySecondTime: "17:00",

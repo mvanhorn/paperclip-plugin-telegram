@@ -42,6 +42,7 @@ import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
+import { isTelegramUpdateAllowed } from "./allowlist.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -58,6 +59,8 @@ type TelegramConfig = {
   notifyOnAgentError: boolean;
   enableCommands: boolean;
   enableInbound: boolean;
+  allowedTelegramUserIds: string[];
+  allowedTelegramChatIds: string[];
   digestMode: "off" | "daily" | "bidaily" | "tridaily";
   dailyDigestTime: string;
   bidailySecondTime: string;
@@ -846,6 +849,17 @@ async function handleUpdate(
   baseUrl: string,
   publicUrl?: string,
 ): Promise<void> {
+  if (!isTelegramUpdateAllowed(config, update)) {
+    const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
+    const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
+    ctx.logger.warn("Blocked unauthorized Telegram update", {
+      updateId: update.update_id,
+      fromId,
+      chatId,
+    });
+    return;
+  }
+
   if (update.callback_query) {
     await handleCallbackQuery(ctx, token, update.callback_query, baseUrl);
     return;
