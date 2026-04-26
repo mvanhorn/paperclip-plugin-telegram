@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleCommand, BOT_COMMANDS, handleConnectTopic, getTopicForProject } from "../src/commands.js";
+import { handleCommand, BOT_COMMANDS, handleConnectTopic, getTopicForProject, resolveNotificationThreadId } from "../src/commands.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 let sentMessages: Array<{ chatId: string; text: string; options?: Record<string, unknown> }> = [];
 let metricsWritten: Array<{ name: string; value: number }> = [];
 let stateStore: Record<string, unknown> = {};
+const issueProjectId = "43c45c22-79cd-430c-ab9c-e4a56a30855f";
 
 function mockCtx(): PluginContext {
   return {
@@ -29,6 +30,14 @@ function mockCtx(): PluginContext {
       warn: vi.fn(),
       error: vi.fn(),
     },
+    companies: {
+      get: vi.fn().mockResolvedValue({ id: "123", name: "Test Co", issuePrefix: "PROJ" }),
+    },
+    projects: {
+      get: vi.fn().mockImplementation(async (projectId: string) =>
+        projectId === issueProjectId ? { id: issueProjectId, name: "Setup and Tests" } : null
+      ),
+    },
     agents: {
       list: vi.fn().mockResolvedValue([
         { id: "a1", name: "Builder", status: "active" },
@@ -40,6 +49,11 @@ function mockCtx(): PluginContext {
         { id: "i1", identifier: "PROJ-1", title: "Fix bug", status: "todo", project: null },
         { id: "i2", identifier: "PROJ-2", title: "Add feature", status: "done", project: { name: "Backend" } },
       ]),
+      get: vi.fn().mockResolvedValue({
+        id: "issue-1",
+        projectId: issueProjectId,
+        title: "Telegram forum topic routing smoke test",
+      }),
     },
   } as unknown as PluginContext;
 }
@@ -230,6 +244,12 @@ describe("handleConnectTopic", () => {
     expect(stateStore["topic-map-123"]).toEqual({ Backend: "42" });
   });
 
+  it("uses the current forum topic when no explicit topic id is provided", async () => {
+    const ctx = mockCtx();
+    await handleConnectTopic(ctx, "token", "123", "Setup and Tests", 58);
+    expect(stateStore["topic-map-123"]).toEqual({ "Setup and Tests": "58" });
+  });
+
   it("shows usage when args are insufficient", async () => {
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "");
@@ -268,6 +288,68 @@ describe("getTopicForProject", () => {
   it("returns undefined when no project name", async () => {
     const ctx = mockCtx();
     const result = await getTopicForProject(ctx, "123");
+    expect(result).toBeUndefined();
+  });
+});
+
+describe("resolveNotificationThreadId", () => {
+  it("returns mapped topic when topic routing is enabled", async () => {
+    stateStore["topic-map-123"] = { "Setup and Tests": "58" };
+    const ctx = mockCtx();
+    const result = await resolveNotificationThreadId(ctx, "123", {
+      eventId: "evt-1",
+      eventType: "issue.created",
+      occurredAt: new Date().toISOString(),
+      entityId: "issue-1",
+      entityType: "issue",
+      companyId: "company-1",
+      payload: { projectName: "Setup and Tests" },
+    }, true);
+    expect(result).toBe(58);
+  });
+
+  it("resolves mapped topic from issue project when event payload has no project name", async () => {
+    stateStore["topic-map-123"] = { "Setup and Tests": "58" };
+    const ctx = mockCtx();
+    const result = await resolveNotificationThreadId(ctx, "123", {
+      eventId: "evt-1",
+      eventType: "issue.created",
+      occurredAt: new Date().toISOString(),
+      entityId: "issue-1",
+      entityType: "issue",
+      companyId: "company-1",
+      payload: {},
+    }, true);
+    expect(result).toBe(58);
+  });
+
+  it("does not force a General topic fallback when no project mapping exists", async () => {
+    stateStore["topic-map-123"] = { Backend: "42" };
+    const ctx = mockCtx();
+    const result = await resolveNotificationThreadId(ctx, "123", {
+      eventId: "evt-1",
+      eventType: "issue.created",
+      occurredAt: new Date().toISOString(),
+      entityId: "issue-1",
+      entityType: "issue",
+      companyId: "company-1",
+      payload: {},
+    }, true);
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined when topic routing is disabled", async () => {
+    stateStore["topic-map-123"] = { "Setup and Tests": "58" };
+    const ctx = mockCtx();
+    const result = await resolveNotificationThreadId(ctx, "123", {
+      eventId: "evt-1",
+      eventType: "issue.created",
+      occurredAt: new Date().toISOString(),
+      entityId: "issue-1",
+      entityType: "issue",
+      companyId: "company-1",
+      payload: { projectName: "Setup and Tests" },
+    }, false);
     expect(result).toBeUndefined();
   });
 });
