@@ -26,7 +26,7 @@ import {
   formatAgentRunFinished,
   type IssueLinksOpts,
 } from "./formatters.js";
-import { handleCommand, getTopicForProject, BOT_COMMANDS } from "./commands.js";
+import { handleCommand, resolveNotificationThreadId, BOT_COMMANDS } from "./commands.js";
 import {
   routeMessageToAgent,
   handleHandoffToolCall,
@@ -286,15 +286,7 @@ const plugin = definePlugin({
       const msg = formatter(event, linksOpts);
 
       let messageThreadId: number | undefined;
-      if (config.topicRouting) {
-        const payload = event.payload as Record<string, unknown>;
-        const projectName = payload.projectName ? String(payload.projectName) : undefined;
-        messageThreadId = await getTopicForProject(ctx, chatId, projectName);
-      }
-      // For forum groups, fall back to General topic if no specific topic mapping
-      if (!messageThreadId && await isForum(ctx, token, chatId)) {
-        messageThreadId = GENERAL_TOPIC_THREAD_ID;
-      }
+      messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, config.topicRouting);
 
       if (messageThreadId) {
         msg.options.messageThreadId = messageThreadId;
