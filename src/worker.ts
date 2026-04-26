@@ -35,6 +35,7 @@ import {
   setupAcpOutputListener,
 } from "./acp-bridge.js";
 import { handleMediaMessage } from "./media-pipeline.js";
+import { getPersistedTelegramUpdateOffset, persistTelegramUpdateOffset } from "./polling-offset.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { METRIC_NAMES } from "./constants.js";
@@ -169,7 +170,7 @@ const plugin = definePlugin({
 
     // --- Long polling for inbound messages ---
     let pollingActive = true;
-    let lastUpdateId = 0;
+    let lastUpdateId = await getPersistedTelegramUpdateOffset(ctx);
 
     async function pollUpdates(): Promise<void> {
       while (pollingActive) {
@@ -185,8 +186,27 @@ const plugin = definePlugin({
 
           if (data.ok && data.result) {
             for (const update of data.result) {
-              lastUpdateId = Math.max(lastUpdateId, update.update_id);
-              await handleUpdate(ctx, token, config, update, baseUrl, publicUrl);
+              try {
+                await handleUpdate(ctx, token, config, update, baseUrl, publicUrl);
+              } catch (err) {
+                ctx.logger.error("Telegram update handling failed", {
+                  updateId: update.update_id,
+                  error: String(err),
+                });
+              }
+
+              const nextUpdateId = Math.max(lastUpdateId, update.update_id);
+              if (nextUpdateId > lastUpdateId) {
+                lastUpdateId = nextUpdateId;
+                try {
+                  await persistTelegramUpdateOffset(ctx, lastUpdateId);
+                } catch (err) {
+                  ctx.logger.error("Failed to persist Telegram polling offset", {
+                    updateId: lastUpdateId,
+                    error: String(err),
+                  });
+                }
+              }
             }
           }
         } catch (err) {
