@@ -50,7 +50,10 @@ This is that plugin.
 - `/approve <id>` - Approve a pending approval
 - `/help` - Display all available commands
 - `/connect <company>` - Link this chat to a Paperclip company
-- `/connect_topic <project-name> <topic-id>` - Map a forum topic to a Paperclip project
+- `/connect_topic <project-name> [topic-id]` - Map a forum topic to an existing Paperclip project
+- `/topics list` - Show forum topic mappings for this chat
+- `/topics remove <project-name>` - Remove one forum topic mapping
+- `/topics clear` - Remove all forum topic mappings for this chat
 - `/acp spawn <agent>` - Start a new agent session in the current thread
 - `/acp status` - Check ACP session status
 - `/acp cancel` - Cancel a running ACP session
@@ -120,9 +123,16 @@ This is that plugin.
 - Includes: tasks completed/created, active agents, in-progress/review/blocked issues
 
 ### Forum topic routing
-- Map Telegram forum topics to Paperclip projects via `/connect_topic`
+- Map Telegram forum topics to existing Paperclip projects via `/connect_topic`
+- Manage mappings with `/topics list`, `/topics remove <project-name>`, and `/topics clear`
 - Notifications for a project are routed to its mapped topic
 - Requires a group with forum topics enabled
+
+### Notification topic routing
+- `approvalsTopicId` routes approval notifications to a dedicated forum topic.
+- `errorsTopicId` routes agent error notifications to a dedicated forum topic.
+- `digestTopicId` routes daily/bidaily/tridaily digest notifications to a dedicated forum topic.
+- If a topic ID is empty, the plugin keeps its existing behavior. Digest messages in forum groups fall back to the General topic.
 
 ## Install
 
@@ -146,6 +156,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 4. Send a message to your bot, then run `curl "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"` and find the `chat.id` field
 5. In Paperclip, go to **Settings -> Secrets -> Create new secret**, paste your bot token as the secret value, and copy the resulting UUID
 6. Configure the plugin with the secret UUID in `telegramBotTokenRef` and your chat ID in `defaultChatId`
+7. If your Paperclip deployment requires authenticated board mutations, open the plugin settings page from a company context and complete **Board Access Connection**. This stores a Paperclip board API token as a company secret and lets Telegram approval actions authenticate without pasting raw tokens into the plugin config.
 
 ## Configuration
 
@@ -154,12 +165,18 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `telegramBotTokenRef` | Yes | Secret UUID for your bot token |
 | `defaultChatId` | No | Fallback chat ID for notifications |
 | `approvalsChatId` | No | Separate chat for approvals |
+| `approvalsTopicId` | No | Forum topic ID for approvals inside the selected approvals/default chat |
 | `errorsChatId` | No | Separate chat for errors |
+| `errorsTopicId` | No | Forum topic ID for errors inside the selected errors/default chat |
+| `digestTopicId` | No | Forum topic ID for digests inside the selected company/default chat |
 | `escalationChatId` | No | Dedicated chat for agent escalations |
 | `paperclipBaseUrl` | No | Internal Paperclip API URL (default: http://localhost:3100) |
+| `paperclipBoardApiTokenRef` | No | Advanced/manual secret reference to a Paperclip board API token used by Telegram approval buttons and `/approve` commands. Prefer the Board Access Connection settings UI when available |
 | `paperclipPublicUrl` | No | Public URL for issue links in messages |
 | `enableCommands` | No | Enable bot commands (default: true) |
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
+| `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. Empty means any user is allowed |
+| `allowedTelegramChatIds` | No | Optional allowlist of Telegram chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
@@ -174,6 +191,36 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `transcriptionApiKeyRef` | No | Secret reference to OpenAI API key for Whisper |
 | `maxSuggestionsPerHourPerCompany` | No | Rate limit for proactive suggestions (default: 10) |
 | `watchDeduplicationWindowMs` | No | Suppress duplicate watch suggestions within this window (default: 86400000 / 24h) |
+
+### Inbound security allowlists
+
+Telegram does not provide a BotFather setting to disable direct messages while still allowing group use. To safely enable `enableCommands` or `enableInbound`, configure one or both allowlists:
+
+- `allowedTelegramUserIds`: who may interact with the bot
+- `allowedTelegramChatIds`: where interactions are accepted
+
+If both allowlists are configured, both must match. For example, a user must be on the user allowlist and the message must come from an allowed DM or group chat.
+
+The allowlists apply to:
+
+- bot commands
+- inbound replies routed back to Paperclip
+- media intake
+- inline button callbacks
+
+Leave an allowlist empty only if that dimension should be unrestricted. After changing allowlists, save the plugin settings and restart the plugin if the new values are not picked up immediately.
+
+### Board access for approval actions
+
+Approval buttons and `/approve <approval-id>` call Paperclip approval APIs. Authenticated Paperclip deployments may require a board API token for those mutations.
+
+Use **Board Access Connection** on the plugin settings page to connect board access:
+
+1. Open the Telegram plugin settings page inside a company.
+2. Click **Connect board access**.
+3. Approve the Paperclip board-access request in the opened window.
+
+The plugin stores the resulting board API token as a Paperclip company secret and keeps only the secret reference in plugin state. The advanced `paperclipBoardApiTokenRef` config field is still supported for manual setups.
 
 ## Agent tools
 
@@ -190,7 +237,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 |---------|---------|-------------|
 | Push notifications | Yes | Yes |
 | Receive messages | No | Yes |
-| Bot commands | No | /status, /issues, /agents, /approve, /acp, /commands |
+| Bot commands | No | /status, /issues, /agents, /approve, /topics, /acp, /commands |
 | Inline buttons | No | Approve/reject on approvals + escalations + handoffs |
 | Reply routing | No | Replies become issue comments |
 | Topic routing | No | Forum topic = project |

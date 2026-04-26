@@ -1,12 +1,22 @@
-import type { PluginContext, Agent, Issue } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import { handleAcpCommand } from "./acp-bridge.js";
+import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
 type BotCommand = {
   command: string;
   description: string;
 };
+
+type TopicMappingRecord = {
+  projectId?: string;
+  projectName: string;
+  topicId: string;
+};
+
+type TopicMappingValue = string | TopicMappingRecord;
+type TopicMap = Record<string, TopicMappingValue>;
 
 export const BOT_COMMANDS: BotCommand[] = [
   { command: "create", description: "Create a new task (assigned to CEO agent)" },
@@ -17,6 +27,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "help", description: "Show available commands" },
   { command: "connect", description: "Link this chat to a Paperclip company" },
   { command: "connect_topic", description: "Map a project to a forum topic" },
+  { command: "topics", description: "List or remove forum topic mappings" },
   { command: "acp", description: "Manage agent sessions (spawn, status, cancel, close)" },
   { command: "commands", description: "Manage custom workflow commands (list, import, run, delete)" },
 ];
@@ -30,24 +41,26 @@ export async function handleCommand(
   messageThreadId?: number,
   baseUrl?: string,
   publicUrl?: string,
+  companyId?: string,
+  boardApiToken?: string,
 ): Promise<void> {
   await ctx.metrics.write(METRIC_NAMES.commandsHandled, 1);
 
   switch (command) {
     case "create":
-      await handleCreate(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl);
+      await handleCreate(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl, companyId);
       break;
     case "status":
-      await handleStatus(ctx, token, chatId, messageThreadId, publicUrl);
+      await handleStatus(ctx, token, chatId, messageThreadId, publicUrl, companyId);
       break;
     case "issues":
-      await handleIssues(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl);
+      await handleIssues(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl, companyId);
       break;
     case "agents":
-      await handleAgents(ctx, token, chatId, messageThreadId, publicUrl);
+      await handleAgents(ctx, token, chatId, messageThreadId, publicUrl, companyId);
       break;
     case "approve":
-      await handleApprove(ctx, token, chatId, args, messageThreadId, baseUrl);
+      await handleApprove(ctx, token, chatId, args, messageThreadId, baseUrl, boardApiToken);
       break;
     case "help":
       await handleHelp(ctx, token, chatId, messageThreadId);
@@ -57,6 +70,9 @@ export async function handleCommand(
       break;
     case "connect_topic":
       await handleConnectTopic(ctx, token, chatId, args, messageThreadId);
+      break;
+    case "topics":
+      await handleTopicsCommand(ctx, token, chatId, args, messageThreadId);
       break;
     case "acp":
       await handleAcpCommand(ctx, token, chatId, args, messageThreadId);
@@ -78,11 +94,12 @@ async function handleStatus(
   chatId: string,
   messageThreadId?: number,
   publicUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const agents = await ctx.agents.list({ companyId });
     const activeAgents = agents.filter((a: Agent) => a.status === "active");
     const issues = await ctx.issues.list({ companyId, limit: 10 });
@@ -119,11 +136,12 @@ async function handleIssues(
   projectFilter: string,
   messageThreadId?: number,
   baseUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const company = await ctx.companies.get(companyId);
     const issues = await ctx.issues.list({ companyId, limit: 10 });
     const filtered = projectFilter
@@ -173,11 +191,12 @@ async function handleAgents(
   chatId: string,
   messageThreadId?: number,
   publicUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const agents = await ctx.agents.list({ companyId });
 
     if (agents.length === 0) {
@@ -220,6 +239,7 @@ async function handleApprove(
   approvalId: string,
   messageThreadId?: number,
   baseUrl: string = "http://localhost:3100",
+  boardApiToken?: string,
 ): Promise<void> {
   if (!approvalId.trim()) {
     await sendMessage(ctx, token, chatId, "Usage: /approve <approval-id>", {
@@ -229,11 +249,15 @@ async function handleApprove(
   }
 
   try {
-    await ctx.http.fetch(
+    await fetchPaperclipApi(
+      ctx,
       `${baseUrl}/api/approvals/${approvalId.trim()}/approve`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...buildPaperclipAuthHeaders(boardApiToken),
+        },
         body: JSON.stringify({ decidedByUserId: `telegram:${chatId}` }),
       },
     );
@@ -354,6 +378,7 @@ async function handleCreate(
   titleArg: string,
   messageThreadId?: number,
   linkBaseUrl?: string,
+  resolvedCompanyId?: string,
 ): Promise<void> {
   const title = titleArg.trim();
   if (!title) {
@@ -364,9 +389,10 @@ async function handleCreate(
   await sendChatAction(ctx, token, chatId);
 
   try {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const company = await ctx.companies.get(companyId);
     const issuePrefix = company?.issuePrefix;
+    const projectId = await resolveProjectIdForTopic(ctx, chatId, companyId, messageThreadId);
 
     // Find the CEO agent to assign to
     const agents = await ctx.agents.list({ companyId });
@@ -376,7 +402,7 @@ async function handleCreate(
     // This ordering is load-bearing: the issue_assigned wake only fires when the assignee
     // *transitions* from null to an agent. If we set the assignee at creation time, there's
     // no transition and the agent never gets woken.
-    let issue = await ctx.issues.create({ companyId, title });
+    let issue = await ctx.issues.create({ companyId, title, ...(projectId ? { projectId } : {}) });
     if (ceo) {
       issue = await ctx.issues.update(
         issue.id,
@@ -421,39 +447,267 @@ export async function handleConnectTopic(
   messageThreadId?: number,
 ): Promise<void> {
   const parts = args.trim().split(/\s+/);
-  if (parts.length < 2) {
-    await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> <topic\\-id>", {
+  if (parts.length < 1 || (parts.length < 2 && !messageThreadId)) {
+    await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> \\[topic\\-id\\]", {
       parseMode: "MarkdownV2",
       messageThreadId,
     });
     return;
   }
 
-  const topicId = parts.pop()!;
-  const projectName = parts.join(" ");
+  let topicId: string;
+  let projectNameInput: string;
+  const explicitTopicId = parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1]);
+  if (explicitTopicId) {
+    topicId = parts.pop()!;
+    projectNameInput = parts.join(" ");
+  } else {
+    if (!messageThreadId) {
+      await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> \\[topic\\-id\\]", {
+        parseMode: "MarkdownV2",
+        messageThreadId,
+      });
+      return;
+    }
+    topicId = String(messageThreadId);
+    projectNameInput = parts.join(" ");
+  }
 
-  const existing = (await ctx.state.get({
-    scopeKind: "instance",
-    stateKey: `topic-map-${chatId}`,
-  })) as Record<string, string> | null;
+  const companyId = await resolveCompanyId(ctx, chatId);
+  const project = await resolveProjectByName(ctx, companyId, projectNameInput);
+  if (!project) {
+    await sendProjectNotFoundMessage(ctx, token, chatId, companyId, projectNameInput, messageThreadId);
+    return;
+  }
 
-  const topicMap = existing ?? {};
-  topicMap[projectName] = topicId;
+  const topicMap = await getTopicMap(ctx, chatId);
+  const existingKey = findTopicMapKey(topicMap, project.name) ?? findTopicMapKey(topicMap, projectNameInput);
+  if (existingKey && existingKey !== project.name) {
+    delete topicMap[existingKey];
+  }
+  topicMap[project.name] = { projectId: project.id, projectName: project.name, topicId };
 
-  await ctx.state.set(
-    { scopeKind: "instance", stateKey: `topic-map-${chatId}` },
-    topicMap,
-  );
+  await setTopicMap(ctx, chatId, topicMap);
 
   await sendMessage(
     ctx,
     token,
     chatId,
-    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2(`Mapped project "${projectName}" to topic ${topicId}`)}`,
+    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2(`Mapped project "${project.name}" to topic ${topicId}`)}`,
     { parseMode: "MarkdownV2", messageThreadId },
   );
 
-  ctx.logger.info("Topic mapped", { chatId, projectName, topicId });
+  ctx.logger.info("Topic mapped", { chatId, projectId: project.id, projectName: project.name, topicId });
+}
+
+async function handleTopicsCommand(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  args: string,
+  messageThreadId?: number,
+): Promise<void> {
+  const [subcommand = "list", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+
+  switch (subcommand.toLowerCase()) {
+    case "list":
+      await handleTopicsList(ctx, token, chatId, messageThreadId);
+      break;
+    case "remove":
+      await handleTopicsRemove(ctx, token, chatId, rest.join(" "), messageThreadId);
+      break;
+    case "clear":
+      await handleTopicsClear(ctx, token, chatId, messageThreadId);
+      break;
+    default:
+      await sendTopicsUsage(ctx, token, chatId, messageThreadId);
+  }
+}
+
+async function handleTopicsList(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<void> {
+  const topicMap = await getTopicMap(ctx, chatId);
+  const entries = Object.entries(topicMap);
+
+  if (entries.length === 0) {
+    await sendMessage(ctx, token, chatId, "No topic mappings found for this chat.", { messageThreadId });
+    return;
+  }
+
+  const lines = [
+    escapeMarkdownV2("🧭") + " *Topic mappings*",
+    "",
+    ...entries.map(([key, value]) => {
+      const mapping = normalizeTopicMapping(key, value);
+      return `• ${escapeMarkdownV2(mapping.projectName)} ${escapeMarkdownV2("→")} ${escapeMarkdownV2(mapping.topicId)}`;
+    }),
+  ];
+
+  await sendMessage(ctx, token, chatId, lines.join("\n"), {
+    parseMode: "MarkdownV2",
+    messageThreadId,
+  });
+}
+
+async function handleTopicsRemove(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  projectName: string,
+  messageThreadId?: number,
+): Promise<void> {
+  const input = projectName.trim();
+  if (!input) {
+    await sendMessage(ctx, token, chatId, "Usage: /topics remove <project\\-name>", {
+      parseMode: "MarkdownV2",
+      messageThreadId,
+    });
+    return;
+  }
+
+  const topicMap = await getTopicMap(ctx, chatId);
+  const key = findTopicMapKey(topicMap, input);
+  if (!key) {
+    await sendMessage(ctx, token, chatId, `No topic mapping found for "${input}".`, { messageThreadId });
+    return;
+  }
+
+  const mapping = normalizeTopicMapping(key, topicMap[key]);
+  delete topicMap[key];
+  await setTopicMap(ctx, chatId, topicMap);
+
+  await sendMessage(
+    ctx,
+    token,
+    chatId,
+    `${escapeMarkdownV2("🗑️")} ${escapeMarkdownV2(`Removed topic mapping for "${mapping.projectName}".`)}`,
+    { parseMode: "MarkdownV2", messageThreadId },
+  );
+}
+
+async function handleTopicsClear(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<void> {
+  await setTopicMap(ctx, chatId, {});
+  await sendMessage(ctx, token, chatId, "Cleared all topic mappings for this chat.", { messageThreadId });
+}
+
+async function sendTopicsUsage(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<void> {
+  await sendMessage(
+    ctx,
+    token,
+    chatId,
+    [
+      escapeMarkdownV2("🧭") + " *Topic Commands*",
+      "",
+      `/topics list \\- ${escapeMarkdownV2("Show mappings for this chat")}`,
+      `/topics remove <project\\-name> \\- ${escapeMarkdownV2("Remove one mapping")}`,
+      `/topics clear \\- ${escapeMarkdownV2("Remove all mappings for this chat")}`,
+    ].join("\n"),
+    { parseMode: "MarkdownV2", messageThreadId },
+  );
+}
+
+async function resolveProjectByName(
+  ctx: PluginContext,
+  companyId: string,
+  projectName: string,
+): Promise<Project | undefined> {
+  const input = projectName.trim();
+  if (!input) return undefined;
+
+  const projects = await ctx.projects.list({ companyId, limit: 100 });
+  return projects.find((project) => project.id === input)
+    ?? projects.find((project) => project.name === input)
+    ?? projects.find((project) => project.name?.toLowerCase() === input.toLowerCase());
+}
+
+async function sendProjectNotFoundMessage(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  companyId: string,
+  projectName: string,
+  messageThreadId?: number,
+): Promise<void> {
+  try {
+    const projects = await ctx.projects.list({ companyId, limit: 100 });
+    const names = projects.map((project) => project.name || project.id).filter(Boolean).join(", ");
+    await sendMessage(
+      ctx,
+      token,
+      chatId,
+      `Project "${projectName.trim()}" not found. Available: ${names || "none"}`,
+      { messageThreadId },
+    );
+  } catch {
+    await sendMessage(ctx, token, chatId, `Project "${projectName.trim()}" not found.`, { messageThreadId });
+  }
+}
+
+async function getTopicMap(ctx: PluginContext, chatId: string): Promise<TopicMap> {
+  const existing = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: `topic-map-${chatId}`,
+  });
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) return {};
+  return existing as TopicMap;
+}
+
+async function setTopicMap(ctx: PluginContext, chatId: string, topicMap: TopicMap): Promise<void> {
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: `topic-map-${chatId}` },
+    topicMap,
+  );
+}
+
+function findTopicMapKey(topicMap: TopicMap, projectName: string): string | undefined {
+  const input = projectName.trim().toLowerCase();
+  if (!input) return undefined;
+
+  return Object.entries(topicMap).find(([key, value]) => {
+    const mapping = normalizeTopicMapping(key, value);
+    return key.toLowerCase() === input
+      || mapping.projectName.toLowerCase() === input
+      || mapping.projectId?.toLowerCase() === input;
+  })?.[0];
+}
+
+function normalizeTopicMapping(projectName: string, value: TopicMappingValue): TopicMappingRecord {
+  if (typeof value === "string") {
+    return { projectName, topicId: value };
+  }
+  return {
+    projectId: value.projectId,
+    projectName: value.projectName || projectName,
+    topicId: String(value.topicId),
+  };
+}
+
+async function getTopicMappingForThread(
+  ctx: PluginContext,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<TopicMappingRecord | undefined> {
+  if (!messageThreadId) return undefined;
+
+  const topicMap = await getTopicMap(ctx, chatId);
+  const topicId = String(messageThreadId);
+  const match = Object.entries(topicMap).find(([, value]) => normalizeTopicMapping("", value).topicId === topicId);
+  if (!match) return undefined;
+  return normalizeTopicMapping(match[0], match[1]);
 }
 
 export async function getTopicForProject(
@@ -462,13 +716,85 @@ export async function getTopicForProject(
   projectName?: string,
 ): Promise<number | undefined> {
   if (!projectName) return undefined;
-  const topicMap = (await ctx.state.get({
-    scopeKind: "instance",
-    stateKey: `topic-map-${chatId}`,
-  })) as Record<string, string> | null;
-  if (!topicMap) return undefined;
-  const topicId = topicMap[projectName];
-  return topicId ? Number(topicId) : undefined;
+  const topicMap = await getTopicMap(ctx, chatId);
+  const key = findTopicMapKey(topicMap, projectName);
+  if (!key) return undefined;
+  const mapping = normalizeTopicMapping(key, topicMap[key]);
+  return Number(mapping.topicId);
+}
+
+async function getProjectNameForTopic(
+  ctx: PluginContext,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<string | undefined> {
+  if (!messageThreadId) return undefined;
+  const topicMap = await getTopicMap(ctx, chatId);
+
+  const topicId = String(messageThreadId);
+  const match = Object.entries(topicMap).find(([, value]) => normalizeTopicMapping("", value).topicId === topicId);
+  if (!match) return undefined;
+  return normalizeTopicMapping(match[0], match[1]).projectName;
+}
+
+async function resolveProjectIdForTopic(
+  ctx: PluginContext,
+  chatId: string,
+  companyId: string,
+  messageThreadId?: number,
+): Promise<string | undefined> {
+  const mapping = await getTopicMappingForThread(ctx, chatId, messageThreadId);
+  if (!mapping) return undefined;
+  if (mapping.projectId) return mapping.projectId;
+
+  try {
+    const projects = await ctx.projects.list({ companyId, limit: 100 });
+    const exactMatch = projects.find((project) => project.name === mapping.projectName);
+    if (exactMatch) return exactMatch.id;
+    return projects.find((project) => project.name?.toLowerCase() === mapping.projectName.toLowerCase())?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function resolveNotificationThreadId(
+  ctx: PluginContext,
+  chatId: string,
+  event: PluginEvent,
+  topicRouting: boolean,
+): Promise<number | undefined> {
+  if (!topicRouting) return undefined;
+  const projectName = await resolveEventProjectName(ctx, event);
+  return getTopicForProject(ctx, chatId, projectName);
+}
+
+async function resolveEventProjectName(
+  ctx: PluginContext,
+  event: PluginEvent,
+): Promise<string | undefined> {
+  const payload = event.payload as Record<string, unknown>;
+  const payloadProjectName = payload.projectName ? String(payload.projectName) : undefined;
+  if (payloadProjectName) return payloadProjectName;
+
+  const payloadProjectId = payload.projectId ? String(payload.projectId) : undefined;
+  if (payloadProjectId) {
+    try {
+      const project = await ctx.projects.get(payloadProjectId, event.companyId);
+      if (project?.name) return project.name;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (event.entityType !== "issue" || !event.entityId) return undefined;
+  try {
+    const issue = await ctx.issues.get(event.entityId, event.companyId);
+    if (!issue?.projectId) return undefined;
+    const project = await ctx.projects.get(issue.projectId, event.companyId);
+    return project?.name;
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<string> {

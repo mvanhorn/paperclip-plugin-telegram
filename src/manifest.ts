@@ -12,6 +12,7 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["connector", "automation"],
   capabilities: [
     "companies.read",
+    "projects.read",
     "issues.read",
     "issues.create",
     "issues.update",
@@ -33,9 +34,22 @@ const manifest: PaperclipPluginManifestV1 = {
     "activity.log.write",
     "metrics.write",
     "jobs.schedule",
+    "instance.settings.register",
+    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
+    ui: "./dist/ui",
+  },
+  ui: {
+    slots: [
+      {
+        type: "settingsPage",
+        id: "telegram-settings",
+        displayName: "Telegram Settings",
+        exportName: "TelegramSettingsPage",
+      },
+    ],
   },
   instanceConfigSchema: {
     type: "object",
@@ -55,6 +69,14 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Internal URL of the Paperclip API server. Used for API calls (approvals, comments). Keep as localhost for same-server deployments.",
         default: DEFAULT_CONFIG.paperclipBaseUrl,
+      },
+      paperclipBoardApiTokenRef: {
+        type: "string",
+        format: "secret-ref",
+        title: "Paperclip Board API Token (secret reference)",
+        description:
+          "Secret UUID for a Paperclip board API token. Used by Telegram approval buttons and /approve commands to resolve approvals as a board actor.",
+        default: DEFAULT_CONFIG.paperclipBoardApiTokenRef,
       },
       paperclipPublicUrl: {
         type: "string",
@@ -79,12 +101,33 @@ const manifest: PaperclipPluginManifestV1 = {
           "Chat ID for approval requests. Falls back to default chat.",
         default: DEFAULT_CONFIG.approvalsChatId,
       },
+      approvalsTopicId: {
+        type: "string",
+        title: "Approvals topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for approval notifications inside the selected approvals/default chat.",
+        default: DEFAULT_CONFIG.approvalsTopicId,
+      },
       errorsChatId: {
         type: "string",
         title: "Errors Chat ID",
         description:
           "Chat ID for agent error notifications. Falls back to default chat.",
         default: DEFAULT_CONFIG.errorsChatId,
+      },
+      errorsTopicId: {
+        type: "string",
+        title: "Errors topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for agent error notifications inside the selected errors/default chat.",
+        default: DEFAULT_CONFIG.errorsTopicId,
+      },
+      digestTopicId: {
+        type: "string",
+        title: "Digest topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for digest notifications inside the selected company/default chat.",
+        default: DEFAULT_CONFIG.digestTopicId,
       },
       escalationChatId: {
         type: "string",
@@ -155,15 +198,31 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "boolean",
         title: "Enable bot commands",
         description:
-          "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents).",
+          "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents). If this is enabled, consider configuring the Telegram user/chat allowlists below.",
         default: DEFAULT_CONFIG.enableCommands,
       },
       enableInbound: {
         type: "boolean",
         title: "Enable inbound message routing",
         description:
-          "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue.",
+          "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue. If this is enabled, consider configuring the Telegram user/chat allowlists below.",
         default: DEFAULT_CONFIG.enableInbound,
+      },
+      allowedTelegramUserIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Telegram user IDs",
+        description:
+          "Optional allowlist of Telegram user IDs allowed to interact with the bot. Leave empty to allow any user. Applies to bot commands, inbound replies, media intake, and inline button callbacks. If both user and chat allowlists are set, both must match. Save the config and restart the plugin if changes are not picked up immediately.",
+        default: DEFAULT_CONFIG.allowedTelegramUserIds,
+      },
+      allowedTelegramChatIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Telegram chat IDs",
+        description:
+          "Optional allowlist of Telegram chat IDs where inbound bot interactions are accepted. Leave empty to allow any chat. Use private DM IDs and/or private group IDs to restrict where commands, replies, media intake, and callbacks are accepted. If both user and chat allowlists are set, both must match. Save the config and restart the plugin if changes are not picked up immediately.",
+        default: DEFAULT_CONFIG.allowedTelegramChatIds,
       },
 
       // --- Escalation ---
