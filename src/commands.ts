@@ -1,4 +1,4 @@
-import type { PluginContext, PluginEvent, Agent, Issue } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import { handleAcpCommand } from "./acp-bridge.js";
@@ -7,6 +7,15 @@ type BotCommand = {
   command: string;
   description: string;
 };
+
+type TopicMappingRecord = {
+  projectId?: string;
+  projectName: string;
+  topicId: string;
+};
+
+type TopicMappingValue = string | TopicMappingRecord;
+type TopicMap = Record<string, TopicMappingValue>;
 
 export const BOT_COMMANDS: BotCommand[] = [
   { command: "create", description: "Create a new task (assigned to CEO agent)" },
@@ -17,6 +26,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "help", description: "Show available commands" },
   { command: "connect", description: "Link this chat to a Paperclip company" },
   { command: "connect_topic", description: "Map a project to a forum topic" },
+  { command: "topics", description: "List or remove forum topic mappings" },
   { command: "acp", description: "Manage agent sessions (spawn, status, cancel, close)" },
   { command: "commands", description: "Manage custom workflow commands (list, import, run, delete)" },
 ];
@@ -58,6 +68,9 @@ export async function handleCommand(
       break;
     case "connect_topic":
       await handleConnectTopic(ctx, token, chatId, args, messageThreadId);
+      break;
+    case "topics":
+      await handleTopicsCommand(ctx, token, chatId, args, messageThreadId);
       break;
     case "acp":
       await handleAcpCommand(ctx, token, chatId, args, messageThreadId);
@@ -436,11 +449,11 @@ export async function handleConnectTopic(
   }
 
   let topicId: string;
-  let projectName: string;
+  let projectNameInput: string;
   const explicitTopicId = parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1]);
   if (explicitTopicId) {
     topicId = parts.pop()!;
-    projectName = parts.join(" ");
+    projectNameInput = parts.join(" ");
   } else {
     if (!messageThreadId) {
       await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> \\[topic\\-id\\]", {
@@ -450,31 +463,244 @@ export async function handleConnectTopic(
       return;
     }
     topicId = String(messageThreadId);
-    projectName = parts.join(" ");
+    projectNameInput = parts.join(" ");
   }
 
-  const existing = (await ctx.state.get({
-    scopeKind: "instance",
-    stateKey: `topic-map-${chatId}`,
-  })) as Record<string, string> | null;
+  const companyId = await resolveCompanyId(ctx, chatId);
+  const project = await resolveProjectByName(ctx, companyId, projectNameInput);
+  if (!project) {
+    await sendProjectNotFoundMessage(ctx, token, chatId, companyId, projectNameInput, messageThreadId);
+    return;
+  }
 
-  const topicMap = existing ?? {};
-  topicMap[projectName] = topicId;
+  const topicMap = await getTopicMap(ctx, chatId);
+  const existingKey = findTopicMapKey(topicMap, project.name) ?? findTopicMapKey(topicMap, projectNameInput);
+  if (existingKey && existingKey !== project.name) {
+    delete topicMap[existingKey];
+  }
+  topicMap[project.name] = { projectId: project.id, projectName: project.name, topicId };
 
-  await ctx.state.set(
-    { scopeKind: "instance", stateKey: `topic-map-${chatId}` },
-    topicMap,
-  );
+  await setTopicMap(ctx, chatId, topicMap);
 
   await sendMessage(
     ctx,
     token,
     chatId,
-    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2(`Mapped project "${projectName}" to topic ${topicId}`)}`,
+    `${escapeMarkdownV2("🔗")} ${escapeMarkdownV2(`Mapped project "${project.name}" to topic ${topicId}`)}`,
     { parseMode: "MarkdownV2", messageThreadId },
   );
 
-  ctx.logger.info("Topic mapped", { chatId, projectName, topicId });
+  ctx.logger.info("Topic mapped", { chatId, projectId: project.id, projectName: project.name, topicId });
+}
+
+async function handleTopicsCommand(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  args: string,
+  messageThreadId?: number,
+): Promise<void> {
+  const [subcommand = "list", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+
+  switch (subcommand.toLowerCase()) {
+    case "list":
+      await handleTopicsList(ctx, token, chatId, messageThreadId);
+      break;
+    case "remove":
+      await handleTopicsRemove(ctx, token, chatId, rest.join(" "), messageThreadId);
+      break;
+    case "clear":
+      await handleTopicsClear(ctx, token, chatId, messageThreadId);
+      break;
+    default:
+      await sendTopicsUsage(ctx, token, chatId, messageThreadId);
+  }
+}
+
+async function handleTopicsList(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<void> {
+  const topicMap = await getTopicMap(ctx, chatId);
+  const entries = Object.entries(topicMap);
+
+  if (entries.length === 0) {
+    await sendMessage(ctx, token, chatId, "No topic mappings found for this chat.", { messageThreadId });
+    return;
+  }
+
+  const lines = [
+    escapeMarkdownV2("🧭") + " *Topic mappings*",
+    "",
+    ...entries.map(([key, value]) => {
+      const mapping = normalizeTopicMapping(key, value);
+      return `• ${escapeMarkdownV2(mapping.projectName)} ${escapeMarkdownV2("→")} ${escapeMarkdownV2(mapping.topicId)}`;
+    }),
+  ];
+
+  await sendMessage(ctx, token, chatId, lines.join("\n"), {
+    parseMode: "MarkdownV2",
+    messageThreadId,
+  });
+}
+
+async function handleTopicsRemove(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  projectName: string,
+  messageThreadId?: number,
+): Promise<void> {
+  const input = projectName.trim();
+  if (!input) {
+    await sendMessage(ctx, token, chatId, "Usage: /topics remove <project\\-name>", {
+      parseMode: "MarkdownV2",
+      messageThreadId,
+    });
+    return;
+  }
+
+  const topicMap = await getTopicMap(ctx, chatId);
+  const key = findTopicMapKey(topicMap, input);
+  if (!key) {
+    await sendMessage(ctx, token, chatId, `No topic mapping found for "${input}".`, { messageThreadId });
+    return;
+  }
+
+  const mapping = normalizeTopicMapping(key, topicMap[key]);
+  delete topicMap[key];
+  await setTopicMap(ctx, chatId, topicMap);
+
+  await sendMessage(
+    ctx,
+    token,
+    chatId,
+    `${escapeMarkdownV2("🗑️")} ${escapeMarkdownV2(`Removed topic mapping for "${mapping.projectName}".`)}`,
+    { parseMode: "MarkdownV2", messageThreadId },
+  );
+}
+
+async function handleTopicsClear(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<void> {
+  await setTopicMap(ctx, chatId, {});
+  await sendMessage(ctx, token, chatId, "Cleared all topic mappings for this chat.", { messageThreadId });
+}
+
+async function sendTopicsUsage(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<void> {
+  await sendMessage(
+    ctx,
+    token,
+    chatId,
+    [
+      escapeMarkdownV2("🧭") + " *Topic Commands*",
+      "",
+      `/topics list \\- ${escapeMarkdownV2("Show mappings for this chat")}`,
+      `/topics remove <project\\-name> \\- ${escapeMarkdownV2("Remove one mapping")}`,
+      `/topics clear \\- ${escapeMarkdownV2("Remove all mappings for this chat")}`,
+    ].join("\n"),
+    { parseMode: "MarkdownV2", messageThreadId },
+  );
+}
+
+async function resolveProjectByName(
+  ctx: PluginContext,
+  companyId: string,
+  projectName: string,
+): Promise<Project | undefined> {
+  const input = projectName.trim();
+  if (!input) return undefined;
+
+  const projects = await ctx.projects.list({ companyId, limit: 100 });
+  return projects.find((project) => project.id === input)
+    ?? projects.find((project) => project.name === input)
+    ?? projects.find((project) => project.name?.toLowerCase() === input.toLowerCase());
+}
+
+async function sendProjectNotFoundMessage(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  companyId: string,
+  projectName: string,
+  messageThreadId?: number,
+): Promise<void> {
+  try {
+    const projects = await ctx.projects.list({ companyId, limit: 100 });
+    const names = projects.map((project) => project.name || project.id).filter(Boolean).join(", ");
+    await sendMessage(
+      ctx,
+      token,
+      chatId,
+      `Project "${projectName.trim()}" not found. Available: ${names || "none"}`,
+      { messageThreadId },
+    );
+  } catch {
+    await sendMessage(ctx, token, chatId, `Project "${projectName.trim()}" not found.`, { messageThreadId });
+  }
+}
+
+async function getTopicMap(ctx: PluginContext, chatId: string): Promise<TopicMap> {
+  const existing = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: `topic-map-${chatId}`,
+  });
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) return {};
+  return existing as TopicMap;
+}
+
+async function setTopicMap(ctx: PluginContext, chatId: string, topicMap: TopicMap): Promise<void> {
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: `topic-map-${chatId}` },
+    topicMap,
+  );
+}
+
+function findTopicMapKey(topicMap: TopicMap, projectName: string): string | undefined {
+  const input = projectName.trim().toLowerCase();
+  if (!input) return undefined;
+
+  return Object.entries(topicMap).find(([key, value]) => {
+    const mapping = normalizeTopicMapping(key, value);
+    return key.toLowerCase() === input
+      || mapping.projectName.toLowerCase() === input
+      || mapping.projectId?.toLowerCase() === input;
+  })?.[0];
+}
+
+function normalizeTopicMapping(projectName: string, value: TopicMappingValue): TopicMappingRecord {
+  if (typeof value === "string") {
+    return { projectName, topicId: value };
+  }
+  return {
+    projectId: value.projectId,
+    projectName: value.projectName || projectName,
+    topicId: String(value.topicId),
+  };
+}
+
+async function getTopicMappingForThread(
+  ctx: PluginContext,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<TopicMappingRecord | undefined> {
+  if (!messageThreadId) return undefined;
+
+  const topicMap = await getTopicMap(ctx, chatId);
+  const topicId = String(messageThreadId);
+  const match = Object.entries(topicMap).find(([, value]) => normalizeTopicMapping("", value).topicId === topicId);
+  if (!match) return undefined;
+  return normalizeTopicMapping(match[0], match[1]);
 }
 
 export async function getTopicForProject(
@@ -483,13 +709,11 @@ export async function getTopicForProject(
   projectName?: string,
 ): Promise<number | undefined> {
   if (!projectName) return undefined;
-  const topicMap = (await ctx.state.get({
-    scopeKind: "instance",
-    stateKey: `topic-map-${chatId}`,
-  })) as Record<string, string> | null;
-  if (!topicMap) return undefined;
-  const topicId = topicMap[projectName];
-  return topicId ? Number(topicId) : undefined;
+  const topicMap = await getTopicMap(ctx, chatId);
+  const key = findTopicMapKey(topicMap, projectName);
+  if (!key) return undefined;
+  const mapping = normalizeTopicMapping(key, topicMap[key]);
+  return Number(mapping.topicId);
 }
 
 async function getProjectNameForTopic(
@@ -498,15 +722,12 @@ async function getProjectNameForTopic(
   messageThreadId?: number,
 ): Promise<string | undefined> {
   if (!messageThreadId) return undefined;
-  const topicMap = (await ctx.state.get({
-    scopeKind: "instance",
-    stateKey: `topic-map-${chatId}`,
-  })) as Record<string, string> | null;
-  if (!topicMap) return undefined;
+  const topicMap = await getTopicMap(ctx, chatId);
 
   const topicId = String(messageThreadId);
-  const match = Object.entries(topicMap).find(([, mappedTopicId]) => mappedTopicId === topicId);
-  return match?.[0];
+  const match = Object.entries(topicMap).find(([, value]) => normalizeTopicMapping("", value).topicId === topicId);
+  if (!match) return undefined;
+  return normalizeTopicMapping(match[0], match[1]).projectName;
 }
 
 async function resolveProjectIdForTopic(
@@ -515,14 +736,15 @@ async function resolveProjectIdForTopic(
   companyId: string,
   messageThreadId?: number,
 ): Promise<string | undefined> {
-  const projectName = await getProjectNameForTopic(ctx, chatId, messageThreadId);
-  if (!projectName) return undefined;
+  const mapping = await getTopicMappingForThread(ctx, chatId, messageThreadId);
+  if (!mapping) return undefined;
+  if (mapping.projectId) return mapping.projectId;
 
   try {
     const projects = await ctx.projects.list({ companyId, limit: 100 });
-    const exactMatch = projects.find((project) => project.name === projectName);
+    const exactMatch = projects.find((project) => project.name === mapping.projectName);
     if (exactMatch) return exactMatch.id;
-    return projects.find((project) => project.name?.toLowerCase() === projectName.toLowerCase())?.id;
+    return projects.find((project) => project.name?.toLowerCase() === mapping.projectName.toLowerCase())?.id;
   } catch {
     return undefined;
   }
