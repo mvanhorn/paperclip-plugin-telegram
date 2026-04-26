@@ -156,6 +156,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 4. Send a message to your bot, then run `curl "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"` and find the `chat.id` field
 5. In Paperclip, go to **Settings -> Secrets -> Create new secret**, paste your bot token as the secret value, and copy the resulting UUID
 6. Configure the plugin with the secret UUID in `telegramBotTokenRef` and your chat ID in `defaultChatId`
+7. If your Paperclip deployment requires authenticated board mutations, open the plugin settings page from a company context and complete **Board Access Connection**. This stores a Paperclip board API token as a company secret and lets Telegram approval actions authenticate without pasting raw tokens into the plugin config.
 
 ## Configuration
 
@@ -170,6 +171,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `digestTopicId` | No | Forum topic ID for digests inside the selected company/default chat |
 | `escalationChatId` | No | Dedicated chat for agent escalations |
 | `paperclipBaseUrl` | No | Internal Paperclip API URL (default: http://localhost:3100) |
+| `paperclipBoardApiTokenRef` | No | Advanced/manual secret reference to a Paperclip board API token used by Telegram approval buttons and `/approve` commands. Prefer the Board Access Connection settings UI when available |
 | `paperclipPublicUrl` | No | Public URL for issue links in messages |
 | `enableCommands` | No | Enable bot commands (default: true) |
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
@@ -207,6 +209,18 @@ The allowlists apply to:
 - inline button callbacks
 
 Leave an allowlist empty only if that dimension should be unrestricted. After changing allowlists, save the plugin settings and restart the plugin if the new values are not picked up immediately.
+
+### Board access for approval actions
+
+Approval buttons and `/approve <approval-id>` call Paperclip approval APIs. Authenticated Paperclip deployments may require a board API token for those mutations.
+
+Use **Board Access Connection** on the plugin settings page to connect board access:
+
+1. Open the Telegram plugin settings page inside a company.
+2. Click **Connect board access**.
+3. Approve the Paperclip board-access request in the opened window.
+
+The plugin stores the resulting board API token as a Paperclip company secret and keeps only the secret reference in plugin state. The advanced `paperclipBoardApiTokenRef` config field is still supported for manual setups.
 
 ## Agent tools
 

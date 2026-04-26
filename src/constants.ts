@@ -10,6 +10,7 @@ export const DEFAULT_CONFIG = {
   errorsTopicId: "",
   digestTopicId: "",
   paperclipBaseUrl: "http://localhost:3100",
+  paperclipBoardApiTokenRef: "",
   paperclipPublicUrl: "",
   notifyOnIssueCreated: true,
   notifyOnIssueDone: true,

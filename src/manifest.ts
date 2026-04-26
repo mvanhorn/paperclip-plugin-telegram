@@ -34,9 +34,22 @@ const manifest: PaperclipPluginManifestV1 = {
     "activity.log.write",
     "metrics.write",
     "jobs.schedule",
+    "instance.settings.register",
+    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
+    ui: "./dist/ui",
+  },
+  ui: {
+    slots: [
+      {
+        type: "settingsPage",
+        id: "telegram-settings",
+        displayName: "Telegram Settings",
+        exportName: "TelegramSettingsPage",
+      },
+    ],
   },
   instanceConfigSchema: {
     type: "object",
@@ -56,6 +69,14 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Internal URL of the Paperclip API server. Used for API calls (approvals, comments). Keep as localhost for same-server deployments.",
         default: DEFAULT_CONFIG.paperclipBaseUrl,
+      },
+      paperclipBoardApiTokenRef: {
+        type: "string",
+        format: "secret-ref",
+        title: "Paperclip Board API Token (secret reference)",
+        description:
+          "Secret UUID for a Paperclip board API token. Used by Telegram approval buttons and /approve commands to resolve approvals as a board actor.",
+        default: DEFAULT_CONFIG.paperclipBoardApiTokenRef,
       },
       paperclipPublicUrl: {
         type: "string",

@@ -42,6 +42,7 @@ import { METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
+import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -52,6 +53,7 @@ type TelegramConfig = {
   errorsTopicId: string;
   digestTopicId: string;
   paperclipBaseUrl: string;
+  paperclipBoardApiTokenRef: string;
   paperclipPublicUrl: string;
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
@@ -114,6 +116,123 @@ type TelegramUpdate = {
 };
 
 const TELEGRAM_API = "https://api.telegram.org";
+const BOARD_ACCESS_SCOPE = {
+  scopeKind: "instance",
+  stateKey: "telegram.board-access.v1",
+} as const;
+
+type TelegramBoardAccessState = {
+  paperclipBoardApiTokenRef: string | null;
+  identity: string | null;
+  companyId: string | null;
+  updatedAt: string | null;
+};
+
+type TelegramBoardAccessRegistration = TelegramBoardAccessState & {
+  configured: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeBoardAccessState(value: unknown): TelegramBoardAccessState {
+  const record = isRecord(value) ? value : {};
+  return {
+    paperclipBoardApiTokenRef: asNonEmptyString(record.paperclipBoardApiTokenRef),
+    identity: asNonEmptyString(record.identity),
+    companyId: asNonEmptyString(record.companyId),
+    updatedAt: asNonEmptyString(record.updatedAt),
+  };
+}
+
+async function loadBoardAccessState(ctx: PluginContext): Promise<TelegramBoardAccessState> {
+  return normalizeBoardAccessState(await ctx.state.get(BOARD_ACCESS_SCOPE));
+}
+
+async function persistBoardAccessState(
+  ctx: PluginContext,
+  state: TelegramBoardAccessState,
+): Promise<TelegramBoardAccessRegistration> {
+  const nextState = normalizeBoardAccessState(state);
+  await ctx.state.set(BOARD_ACCESS_SCOPE, nextState);
+  return {
+    ...nextState,
+    configured: Boolean(nextState.paperclipBoardApiTokenRef),
+  };
+}
+
+function getBoardAccessRegistration(
+  state: TelegramBoardAccessState,
+): TelegramBoardAccessRegistration {
+  return {
+    ...state,
+    configured: Boolean(state.paperclipBoardApiTokenRef),
+  };
+}
+
+async function resolveBoardApiToken(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  companyId?: string | null,
+): Promise<string | undefined> {
+  const boardAccessState = await loadBoardAccessState(ctx);
+  const candidates: Array<{ source: string; ref: string }> = [];
+
+  if (
+    boardAccessState.paperclipBoardApiTokenRef &&
+    (!companyId || !boardAccessState.companyId || boardAccessState.companyId === companyId)
+  ) {
+    candidates.push({
+      source: "board-access",
+      ref: boardAccessState.paperclipBoardApiTokenRef,
+    });
+  }
+
+  if (config.paperclipBoardApiTokenRef) {
+    candidates.push({
+      source: "config",
+      ref: config.paperclipBoardApiTokenRef,
+    });
+  }
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.ref)) continue;
+    seen.add(candidate.ref);
+    try {
+      return await ctx.secrets.resolve(candidate.ref);
+    } catch (err) {
+      ctx.logger.warn("Failed to resolve board API token secret", {
+        source: candidate.source,
+        companyId,
+        error: String(err),
+      });
+    }
+  }
+
+  return undefined;
+}
+
+async function resolveCallbackCompanyId(
+  ctx: PluginContext,
+  query: NonNullable<TelegramUpdate["callback_query"]>,
+): Promise<string | null> {
+  const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
+  const messageId = query.message?.message_id;
+  if (!chatId || !messageId) return null;
+
+  const mapping = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: `msg_${chatId}_${messageId}`,
+  }) as { companyId?: string } | null;
+
+  return mapping?.companyId ?? null;
+}
 
 async function resolveChat(
   ctx: PluginContext,
@@ -173,6 +292,23 @@ const plugin = definePlugin({
     const config = rawConfig as unknown as TelegramConfig;
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
     const publicUrl = config.paperclipPublicUrl || baseUrl;
+
+    ctx.data.register("board-access.read", async () => getBoardAccessRegistration(await loadBoardAccessState(ctx)));
+
+    ctx.actions.register("board-access.update", async (params) => {
+      const record = isRecord(params) ? params : {};
+      const paperclipBoardApiTokenRef = asNonEmptyString(record.paperclipBoardApiTokenRef);
+      const identity = asNonEmptyString(record.identity);
+      const companyId = asNonEmptyString(record.companyId);
+      const now = new Date().toISOString();
+
+      return persistBoardAccessState(ctx, {
+        paperclipBoardApiTokenRef,
+        identity,
+        companyId,
+        updatedAt: now,
+      });
+    });
 
     if (!config.telegramBotTokenRef) {
       ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled");
@@ -789,6 +925,7 @@ async function handleUpdate(
   update: TelegramUpdate,
   baseUrl: string,
   publicUrl?: string,
+  boardApiToken?: string,
 ): Promise<void> {
   if (!isTelegramUpdateAllowed(config, update)) {
     const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
@@ -802,7 +939,9 @@ async function handleUpdate(
   }
 
   if (update.callback_query) {
-    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl);
+    const companyId = await resolveCallbackCompanyId(ctx, update.callback_query);
+    const boardApiToken = await resolveBoardApiToken(ctx, config, companyId);
+    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl, boardApiToken);
     return;
   }
 
@@ -857,7 +996,8 @@ async function handleUpdate(
     if (handledCustom) return;
 
     // Built-in commands
-    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId);
+    const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, config, companyId) : undefined;
+    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken);
     return;
   }
 
@@ -908,6 +1048,7 @@ async function handleCallbackQuery(
   token: string,
   query: NonNullable<TelegramUpdate["callback_query"]>,
   baseUrl: string,
+  boardApiToken?: string,
 ): Promise<void> {
   const data = query.data;
   if (!data) return;
@@ -921,11 +1062,15 @@ async function handleCallbackQuery(
     ctx.logger.info("Approval button clicked", { approvalId, actor });
 
     try {
-      await ctx.http.fetch(
+      await fetchPaperclipApi(
+        ctx,
         `${baseUrl}/api/approvals/${approvalId}/approve`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...buildPaperclipAuthHeaders(boardApiToken),
+          },
           body: JSON.stringify({ decidedByUserId: `telegram:${actor}` }),
         },
       );
@@ -972,11 +1117,15 @@ async function handleCallbackQuery(
     ctx.logger.info("Rejection button clicked", { approvalId, actor });
 
     try {
-      await ctx.http.fetch(
+      await fetchPaperclipApi(
+        ctx,
         `${baseUrl}/api/approvals/${approvalId}/reject`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...buildPaperclipAuthHeaders(boardApiToken),
+          },
           body: JSON.stringify({ decidedByUserId: `telegram:${actor}` }),
         },
       );
