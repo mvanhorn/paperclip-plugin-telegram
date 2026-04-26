@@ -26,6 +26,16 @@ function normalizeAllowlist(values: unknown): Set<string> {
   );
 }
 
+export function validateTelegramAllowlists(config: TelegramAllowlistConfig): string[] {
+  const errors: string[] = [];
+  for (const key of ["allowedTelegramUserIds", "allowedTelegramChatIds"] as const) {
+    const value = config[key];
+    if (value === undefined || Array.isArray(value)) continue;
+    errors.push(`${key} must be an array of Telegram ID strings. Leave it empty to allow any ${key === "allowedTelegramUserIds" ? "user" : "chat"}.`);
+  }
+  return errors;
+}
+
 export function isTelegramUpdateAllowed(
   config: TelegramAllowlistConfig,
   update: TelegramAllowlistUpdate,

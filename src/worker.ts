@@ -41,7 +41,7 @@ import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
-import { isTelegramUpdateAllowed } from "./allowlist.js";
+import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -769,6 +769,10 @@ const plugin = definePlugin({
     const topicErrors = validateConfiguredTopicIds(config as Record<string, unknown>);
     if (topicErrors.length > 0) {
       return { ok: false, errors: topicErrors };
+    }
+    const allowlistErrors = validateTelegramAllowlists(config);
+    if (allowlistErrors.length > 0) {
+      return { ok: false, errors: allowlistErrors };
     }
     return { ok: true };
   },

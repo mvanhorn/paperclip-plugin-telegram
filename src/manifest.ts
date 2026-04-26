@@ -177,30 +177,30 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "boolean",
         title: "Enable bot commands",
         description:
-          "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents).",
+          "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents). If this is enabled, consider configuring the Telegram user/chat allowlists below.",
         default: DEFAULT_CONFIG.enableCommands,
       },
       enableInbound: {
         type: "boolean",
         title: "Enable inbound message routing",
         description:
-          "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue.",
+          "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue. If this is enabled, consider configuring the Telegram user/chat allowlists below.",
         default: DEFAULT_CONFIG.enableInbound,
       },
       allowedTelegramUserIds: {
         type: "array",
         items: { type: "string" },
-        title: "Allowed Telegram User IDs",
+        title: "Allowed Telegram user IDs",
         description:
-          "Optional allowlist of Telegram user IDs allowed to interact with the bot. Leave empty to allow any user. Applies to commands, inbound replies, media intake, and inline button callbacks.",
+          "Optional allowlist of Telegram user IDs allowed to interact with the bot. Leave empty to allow any user. Applies to bot commands, inbound replies, media intake, and inline button callbacks. If both user and chat allowlists are set, both must match. Save the config and restart the plugin if changes are not picked up immediately.",
         default: DEFAULT_CONFIG.allowedTelegramUserIds,
       },
       allowedTelegramChatIds: {
         type: "array",
         items: { type: "string" },
-        title: "Allowed Telegram Chat IDs",
+        title: "Allowed Telegram chat IDs",
         description:
-          "Optional allowlist of Telegram chat IDs where inbound bot interactions are accepted. Leave empty to allow any chat. Useful for restricting the bot to private groups and approved DMs.",
+          "Optional allowlist of Telegram chat IDs where inbound bot interactions are accepted. Leave empty to allow any chat. Use private DM IDs and/or private group IDs to restrict where commands, replies, media intake, and callbacks are accepted. If both user and chat allowlists are set, both must match. Save the config and restart the plugin if changes are not picked up immediately.",
         default: DEFAULT_CONFIG.allowedTelegramChatIds,
       },
 
