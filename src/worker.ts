@@ -252,6 +252,23 @@ const plugin = definePlugin({
         msg.options.messageThreadId = messageThreadId;
       }
 
+      // Issue threading — if we've already sent a message for this entity in this
+      // chat+topic, reply to that anchor so all updates about a single entity stack
+      // as one Telegram thread on mobile (created → comments → done).
+      const anchorKey = event.entityId
+        ? `anchor_${chatId}_${event.entityType}_${event.entityId}`
+        : null;
+      if (anchorKey) {
+        const anchor = (await ctx.state.get({
+          scopeKind: "instance",
+          stateKey: anchorKey,
+        })) as { messageId: number; messageThreadId?: number } | null;
+        // Only thread when targeting the same topic — Telegram rejects cross-topic replies.
+        if (anchor?.messageId && anchor.messageThreadId === messageThreadId) {
+          msg.options.replyToMessageId = anchor.messageId;
+        }
+      }
+
       const messageId = await sendMessage(ctx, token, chatId, msg.text, msg.options);
 
       if (messageId) {
@@ -274,6 +291,21 @@ const plugin = definePlugin({
           entityType: "plugin",
           entityId: event.entityId,
         });
+
+        // First-message-per-entity: store the anchor so future notifications about the
+        // same entity reply to this one. Never overwritten — the first message stays root.
+        if (anchorKey) {
+          const existing = (await ctx.state.get({
+            scopeKind: "instance",
+            stateKey: anchorKey,
+          })) as { messageId: number; messageThreadId?: number } | null;
+          if (!existing) {
+            await ctx.state.set(
+              { scopeKind: "instance", stateKey: anchorKey },
+              { messageId, messageThreadId },
+            );
+          }
+        }
       }
     };
 
