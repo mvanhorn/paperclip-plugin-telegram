@@ -160,8 +160,8 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `paperclipPublicUrl` | No | Public URL for issue links in messages |
 | `enableCommands` | No | Enable bot commands (default: true) |
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
-| `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use inbound features and inline buttons. Empty means any user is allowed |
-| `allowedTelegramChatIds` | No | Optional allowlist of Telegram chat IDs where inbound features are accepted. Empty means any chat is allowed |
+| `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. Empty means any user is allowed |
+| `allowedTelegramChatIds` | No | Optional allowlist of Telegram chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
@@ -176,6 +176,24 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `transcriptionApiKeyRef` | No | Secret reference to OpenAI API key for Whisper |
 | `maxSuggestionsPerHourPerCompany` | No | Rate limit for proactive suggestions (default: 10) |
 | `watchDeduplicationWindowMs` | No | Suppress duplicate watch suggestions within this window (default: 86400000 / 24h) |
+
+### Inbound security allowlists
+
+Telegram does not provide a BotFather setting to disable direct messages while still allowing group use. To safely enable `enableCommands` or `enableInbound`, configure one or both allowlists:
+
+- `allowedTelegramUserIds`: who may interact with the bot
+- `allowedTelegramChatIds`: where interactions are accepted
+
+If both allowlists are configured, both must match. For example, a user must be on the user allowlist and the message must come from an allowed DM or group chat.
+
+The allowlists apply to:
+
+- bot commands
+- inbound replies routed back to Paperclip
+- media intake
+- inline button callbacks
+
+Leave an allowlist empty only if that dimension should be unrestricted. After changing allowlists, save the plugin settings and restart the plugin if the new values are not picked up immediately.
 
 ## Agent tools
 

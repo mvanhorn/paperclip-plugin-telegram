@@ -42,7 +42,7 @@ import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
-import { isTelegramUpdateAllowed } from "./allowlist.js";
+import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -832,6 +832,10 @@ const plugin = definePlugin({
   async onValidateConfig(config) {
     if (!config.telegramBotTokenRef || typeof config.telegramBotTokenRef !== "string") {
       return { ok: false, errors: ["telegramBotTokenRef is required"] };
+    }
+    const allowlistErrors = validateTelegramAllowlists(config);
+    if (allowlistErrors.length > 0) {
+      return { ok: false, errors: allowlistErrors };
     }
     return { ok: true };
   },

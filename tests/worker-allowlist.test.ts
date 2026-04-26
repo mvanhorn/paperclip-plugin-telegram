@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTelegramUpdateAllowed } from "../src/allowlist.js";
+import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "../src/allowlist.js";
 
 const baseConfig = {
   allowedTelegramUserIds: [],
@@ -115,5 +115,25 @@ describe("isTelegramUpdateAllowed", () => {
         data: "approve_apr-1",
       },
     })).toBe(true);
+  });
+});
+
+describe("validateTelegramAllowlists", () => {
+  it("accepts missing or array allowlists", () => {
+    expect(validateTelegramAllowlists({})).toEqual([]);
+    expect(validateTelegramAllowlists({
+      allowedTelegramUserIds: ["123"],
+      allowedTelegramChatIds: ["-1001"],
+    })).toEqual([]);
+  });
+
+  it("rejects non-array allowlist values", () => {
+    expect(validateTelegramAllowlists({
+      allowedTelegramUserIds: "123",
+      allowedTelegramChatIds: "-1001",
+    })).toEqual([
+      "allowedTelegramUserIds must be an array of Telegram ID strings. Leave it empty to allow any user.",
+      "allowedTelegramChatIds must be an array of Telegram ID strings. Leave it empty to allow any chat.",
+    ]);
   });
 });
