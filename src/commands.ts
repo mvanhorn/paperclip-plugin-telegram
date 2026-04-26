@@ -372,6 +372,7 @@ async function handleCreate(
     const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const company = await ctx.companies.get(companyId);
     const issuePrefix = company?.issuePrefix;
+    const projectId = await resolveProjectIdForTopic(ctx, chatId, companyId, messageThreadId);
 
     // Find the CEO agent to assign to
     const agents = await ctx.agents.list({ companyId });
@@ -381,7 +382,7 @@ async function handleCreate(
     // This ordering is load-bearing: the issue_assigned wake only fires when the assignee
     // *transitions* from null to an agent. If we set the assignee at creation time, there's
     // no transition and the agent never gets woken.
-    let issue = await ctx.issues.create({ companyId, title });
+    let issue = await ctx.issues.create({ companyId, title, ...(projectId ? { projectId } : {}) });
     if (ceo) {
       issue = await ctx.issues.update(
         issue.id,
@@ -489,6 +490,42 @@ export async function getTopicForProject(
   if (!topicMap) return undefined;
   const topicId = topicMap[projectName];
   return topicId ? Number(topicId) : undefined;
+}
+
+async function getProjectNameForTopic(
+  ctx: PluginContext,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<string | undefined> {
+  if (!messageThreadId) return undefined;
+  const topicMap = (await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: `topic-map-${chatId}`,
+  })) as Record<string, string> | null;
+  if (!topicMap) return undefined;
+
+  const topicId = String(messageThreadId);
+  const match = Object.entries(topicMap).find(([, mappedTopicId]) => mappedTopicId === topicId);
+  return match?.[0];
+}
+
+async function resolveProjectIdForTopic(
+  ctx: PluginContext,
+  chatId: string,
+  companyId: string,
+  messageThreadId?: number,
+): Promise<string | undefined> {
+  const projectName = await getProjectNameForTopic(ctx, chatId, messageThreadId);
+  if (!projectName) return undefined;
+
+  try {
+    const projects = await ctx.projects.list({ companyId, limit: 100 });
+    const exactMatch = projects.find((project) => project.name === projectName);
+    if (exactMatch) return exactMatch.id;
+    return projects.find((project) => project.name?.toLowerCase() === projectName.toLowerCase())?.id;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function resolveNotificationThreadId(

@@ -34,6 +34,10 @@ function mockCtx(): PluginContext {
       get: vi.fn().mockResolvedValue({ id: "123", name: "Test Co", issuePrefix: "PROJ" }),
     },
     projects: {
+      list: vi.fn().mockResolvedValue([
+        { id: issueProjectId, name: "Setup and Tests" },
+        { id: "backend-project-id", name: "Backend" },
+      ]),
       get: vi.fn().mockImplementation(async (projectId: string) =>
         projectId === issueProjectId ? { id: issueProjectId, name: "Setup and Tests" } : null
       ),
@@ -214,6 +218,33 @@ describe("handleCommand", () => {
     expect(sentMessages[0].text).toContain("Task created");
     expect(sentMessages[0].text).toContain("MC\\-99");
     expect(sentMessages[0].text).toContain("Zhu Li");
+  });
+
+  it("/create attaches the issue to the project mapped to the current forum topic", async () => {
+    stateStore["topic-map-123"] = { "Setup and Tests": "58" };
+    const ctx = mockCtx();
+    (ctx.agents as unknown) = {
+      list: vi.fn().mockResolvedValue([
+        { id: "ceo-1", name: "Zhu Li", status: "idle", role: "ceo" },
+      ]),
+    };
+    const createdIssue = { id: "i-new", identifier: "MC-101", title: "Topic scoped task", status: "backlog" };
+    (ctx.issues as unknown) = {
+      ...ctx.issues,
+      create: vi.fn().mockResolvedValue(createdIssue),
+      update: vi.fn().mockResolvedValue({ ...createdIssue, status: "todo", assigneeAgentId: "ceo-1" }),
+    };
+
+    await handleCommand(ctx, "token", "123", "create", "Topic scoped task", 58);
+
+    expect(ctx.issues.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "123",
+        title: "Topic scoped task",
+        projectId: issueProjectId,
+      }),
+    );
+    expect(sentMessages[0].options).toMatchObject({ messageThreadId: 58 });
   });
 
   it("/create works without a CEO agent", async () => {
