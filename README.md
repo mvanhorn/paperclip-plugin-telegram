@@ -50,7 +50,10 @@ This is that plugin.
 - `/approve <id>` - Approve a pending approval
 - `/help` - Display all available commands
 - `/connect <company>` - Link this chat to a Paperclip company
-- `/connect_topic <project-name> <topic-id>` - Map a forum topic to a Paperclip project
+- `/connect_topic <project-name> [topic-id]` - Map a forum topic to an existing Paperclip project
+- `/topics list` - Show forum topic mappings for this chat
+- `/topics remove <project-name>` - Remove one forum topic mapping
+- `/topics clear` - Remove all forum topic mappings for this chat
 - `/acp spawn <agent>` - Start a new agent session in the current thread
 - `/acp status` - Check ACP session status
 - `/acp cancel` - Cancel a running ACP session
@@ -120,7 +123,8 @@ This is that plugin.
 - Includes: tasks completed/created, active agents, in-progress/review/blocked issues
 
 ### Forum topic routing
-- Map Telegram forum topics to Paperclip projects via `/connect_topic`
+- Map Telegram forum topics to existing Paperclip projects via `/connect_topic`
+- Manage mappings with `/topics list`, `/topics remove <project-name>`, and `/topics clear`
 - Notifications for a project are routed to its mapped topic
 - Requires a group with forum topics enabled
 
@@ -190,7 +194,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 |---------|---------|-------------|
 | Push notifications | Yes | Yes |
 | Receive messages | No | Yes |
-| Bot commands | No | /status, /issues, /agents, /approve, /acp, /commands |
+| Bot commands | No | /status, /issues, /agents, /approve, /topics, /acp, /commands |
 | Inline buttons | No | Approve/reject on approvals + escalations + handoffs |
 | Reply routing | No | Replies become issue comments |
 | Topic routing | No | Forum topic = project |

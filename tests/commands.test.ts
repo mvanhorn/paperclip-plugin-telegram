@@ -37,6 +37,10 @@ function mockCtx(): PluginContext {
       get: vi.fn().mockImplementation(async (projectId: string) =>
         projectId === issueProjectId ? { id: issueProjectId, name: "Setup and Tests" } : null
       ),
+      list: vi.fn().mockResolvedValue([
+        { id: issueProjectId, name: "Setup and Tests" },
+        { id: "backend-project-id", name: "Backend" },
+      ]),
     },
     agents: {
       list: vi.fn().mockResolvedValue([
@@ -241,13 +245,17 @@ describe("handleConnectTopic", () => {
   it("stores topic mapping for a project", async () => {
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "Backend 42");
-    expect(stateStore["topic-map-123"]).toEqual({ Backend: "42" });
+    expect(stateStore["topic-map-123"]).toEqual({
+      Backend: { projectId: "backend-project-id", projectName: "Backend", topicId: "42" },
+    });
   });
 
   it("uses the current forum topic when no explicit topic id is provided", async () => {
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "Setup and Tests", 58);
-    expect(stateStore["topic-map-123"]).toEqual({ "Setup and Tests": "58" });
+    expect(stateStore["topic-map-123"]).toEqual({
+      "Setup and Tests": { projectId: issueProjectId, projectName: "Setup and Tests", topicId: "58" },
+    });
   });
 
   it("shows usage when args are insufficient", async () => {
@@ -260,12 +268,81 @@ describe("handleConnectTopic", () => {
     stateStore["topic-map-123"] = { Frontend: "10" };
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "Backend 42");
-    expect(stateStore["topic-map-123"]).toEqual({ Frontend: "10", Backend: "42" });
+    expect(stateStore["topic-map-123"]).toEqual({
+      Frontend: "10",
+      Backend: { projectId: "backend-project-id", projectName: "Backend", topicId: "42" },
+    });
+  });
+
+  it("rejects unknown projects without storing a topic mapping", async () => {
+    const ctx = mockCtx();
+    await handleConnectTopic(ctx, "token", "123", "Unknown Project 42");
+    expect(stateStore["topic-map-123"]).toBeUndefined();
+    expect(sentMessages[0].text).toContain("Project \"Unknown Project\" not found");
+  });
+
+  it("replaces a legacy mapping with the canonical project name", async () => {
+    stateStore["topic-map-123"] = { backend: "41" };
+    const ctx = mockCtx();
+    await handleConnectTopic(ctx, "token", "123", "backend 42");
+    expect(stateStore["topic-map-123"]).toEqual({
+      Backend: { projectId: "backend-project-id", projectName: "Backend", topicId: "42" },
+    });
+  });
+});
+
+describe("topics command", () => {
+  it("lists topic mappings", async () => {
+    stateStore["topic-map-123"] = {
+      Backend: { projectId: "backend-project-id", projectName: "Backend", topicId: "42" },
+      Legacy: "7",
+    };
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "topics", "list");
+    expect(sentMessages[0].text).toContain("Topic mappings");
+    expect(sentMessages[0].text).toContain("Backend");
+    expect(sentMessages[0].text).toContain("42");
+    expect(sentMessages[0].text).toContain("Legacy");
+    expect(sentMessages[0].text).toContain("7");
+  });
+
+  it("removes one topic mapping", async () => {
+    stateStore["topic-map-123"] = {
+      Backend: { projectId: "backend-project-id", projectName: "Backend", topicId: "42" },
+      Frontend: "10",
+    };
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "topics", "remove Backend");
+    expect(stateStore["topic-map-123"]).toEqual({ Frontend: "10" });
+    expect(sentMessages[0].text).toContain("Removed topic mapping");
+  });
+
+  it("clears all topic mappings", async () => {
+    stateStore["topic-map-123"] = { Backend: "42" };
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "topics", "clear");
+    expect(stateStore["topic-map-123"]).toEqual({});
+    expect(sentMessages[0].text).toContain("Cleared all topic mappings");
+  });
+
+  it("shows usage for unknown topics subcommands", async () => {
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "topics", "wat");
+    expect(sentMessages[0].text).toContain("Topic Commands");
   });
 });
 
 describe("getTopicForProject", () => {
   it("returns topic id for mapped project", async () => {
+    stateStore["topic-map-123"] = {
+      Backend: { projectId: "backend-project-id", projectName: "Backend", topicId: "42" },
+    };
+    const ctx = mockCtx();
+    const result = await getTopicForProject(ctx, "123", "Backend");
+    expect(result).toBe(42);
+  });
+
+  it("returns topic id for legacy string mappings", async () => {
     stateStore["topic-map-123"] = { Backend: "42" };
     const ctx = mockCtx();
     const result = await getTopicForProject(ctx, "123", "Backend");
@@ -364,5 +441,6 @@ describe("BOT_COMMANDS", () => {
     expect(names).toContain("help");
     expect(names).toContain("connect");
     expect(names).toContain("connect_topic");
+    expect(names).toContain("topics");
   });
 });
