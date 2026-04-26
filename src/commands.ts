@@ -1,4 +1,4 @@
-import type { PluginContext, Agent, Issue } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginEvent, Agent, Issue } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import { handleAcpCommand } from "./acp-bridge.js";
@@ -426,16 +426,31 @@ export async function handleConnectTopic(
   messageThreadId?: number,
 ): Promise<void> {
   const parts = args.trim().split(/\s+/);
-  if (parts.length < 2) {
-    await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> <topic\\-id>", {
+  if (parts.length < 1 || (parts.length < 2 && !messageThreadId)) {
+    await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> \\[topic\\-id\\]", {
       parseMode: "MarkdownV2",
       messageThreadId,
     });
     return;
   }
 
-  const topicId = parts.pop()!;
-  const projectName = parts.join(" ");
+  let topicId: string;
+  let projectName: string;
+  const explicitTopicId = parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1]);
+  if (explicitTopicId) {
+    topicId = parts.pop()!;
+    projectName = parts.join(" ");
+  } else {
+    if (!messageThreadId) {
+      await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> \\[topic\\-id\\]", {
+        parseMode: "MarkdownV2",
+        messageThreadId,
+      });
+      return;
+    }
+    topicId = String(messageThreadId);
+    projectName = parts.join(" ");
+  }
 
   const existing = (await ctx.state.get({
     scopeKind: "instance",
@@ -474,6 +489,46 @@ export async function getTopicForProject(
   if (!topicMap) return undefined;
   const topicId = topicMap[projectName];
   return topicId ? Number(topicId) : undefined;
+}
+
+export async function resolveNotificationThreadId(
+  ctx: PluginContext,
+  chatId: string,
+  event: PluginEvent,
+  topicRouting: boolean,
+): Promise<number | undefined> {
+  if (!topicRouting) return undefined;
+  const projectName = await resolveEventProjectName(ctx, event);
+  return getTopicForProject(ctx, chatId, projectName);
+}
+
+async function resolveEventProjectName(
+  ctx: PluginContext,
+  event: PluginEvent,
+): Promise<string | undefined> {
+  const payload = event.payload as Record<string, unknown>;
+  const payloadProjectName = payload.projectName ? String(payload.projectName) : undefined;
+  if (payloadProjectName) return payloadProjectName;
+
+  const payloadProjectId = payload.projectId ? String(payload.projectId) : undefined;
+  if (payloadProjectId) {
+    try {
+      const project = await ctx.projects.get(payloadProjectId, event.companyId);
+      if (project?.name) return project.name;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (event.entityType !== "issue" || !event.entityId) return undefined;
+  try {
+    const issue = await ctx.issues.get(event.entityId, event.companyId);
+    if (!issue?.projectId) return undefined;
+    const project = await ctx.projects.get(issue.projectId, event.companyId);
+    return project?.name;
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<string> {
