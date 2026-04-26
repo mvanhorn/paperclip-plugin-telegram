@@ -47,7 +47,10 @@ type TelegramConfig = {
   telegramBotTokenRef: string;
   defaultChatId: string;
   approvalsChatId: string;
+  approvalsTopicId: string;
   errorsChatId: string;
+  errorsTopicId: string;
+  digestTopicId: string;
   paperclipBaseUrl: string;
   paperclipPublicUrl: string;
   notifyOnIssueCreated: boolean;
@@ -123,6 +126,36 @@ async function resolveChat(
     stateKey: "telegram-chat",
   });
   return (override as string) ?? fallback ?? null;
+}
+
+function parseTopicId(value?: string): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  return Number(trimmed);
+}
+
+function validateConfiguredTopicIds(config: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  for (const key of ["approvalsTopicId", "errorsTopicId", "digestTopicId"]) {
+    const value = config[key];
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string" || !parseTopicId(value)) {
+      errors.push(`${key} must be a numeric Telegram forum topic ID string.`);
+    }
+  }
+  return errors;
+}
+
+async function resolveDigestThreadId(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  configuredTopicId?: string,
+): Promise<number | undefined> {
+  const configured = parseTopicId(configuredTopicId);
+  if (configured) return configured;
+  return await isForum(ctx, token, chatId) ? GENERAL_TOPIC_THREAD_ID : undefined;
 }
 
 async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<string> {
@@ -250,6 +283,7 @@ const plugin = definePlugin({
       event: PluginEvent,
       formatter: (e: PluginEvent, opts?: IssueLinksOpts) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
       overrideChatId?: string,
+      overrideTopicId?: string,
     ) => {
       const chatId = await resolveChat(
         ctx,
@@ -260,8 +294,10 @@ const plugin = definePlugin({
       const linksOpts = await resolveIssueLinksOpts(event.companyId);
       const msg = formatter(event, linksOpts);
 
-      let messageThreadId: number | undefined;
-      messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, config.topicRouting);
+      let messageThreadId = parseTopicId(overrideTopicId);
+      if (!messageThreadId) {
+        messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, config.topicRouting);
+      }
 
       if (messageThreadId) {
         msg.options.messageThreadId = messageThreadId;
@@ -366,13 +402,13 @@ const plugin = definePlugin({
             ? `${approvalType} — ${agentLabel}`
             : approvalType;
         }
-        await notify(event, formatApprovalCreated, config.approvalsChatId);
+        await notify(event, formatApprovalCreated, config.approvalsChatId, config.approvalsTopicId);
       });
     }
 
     if (config.notifyOnAgentError) {
       ctx.events.on("agent.run.failed", (event: PluginEvent) =>
-        notify(event, formatAgentError, config.errorsChatId),
+        notify(event, formatAgentError, config.errorsChatId, config.errorsTopicId),
       );
     }
 
@@ -501,9 +537,7 @@ const plugin = definePlugin({
               for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
             }
 
-            const digestThreadId = await isForum(ctx, token, chatId)
-              ? GENERAL_TOPIC_THREAD_ID
-              : undefined;
+            const digestThreadId = await resolveDigestThreadId(ctx, token, chatId, config.digestTopicId);
 
             await sendMessage(ctx, token, chatId, lines.join("\n"), {
               parseMode: "MarkdownV2",
@@ -517,9 +551,12 @@ const plugin = definePlugin({
               escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
             ].join("\n");
 
-            const errorThreadId = await isForum(ctx, token, chatId)
-              ? GENERAL_TOPIC_THREAD_ID
-              : undefined;
+            const errorThreadId = await resolveDigestThreadId(
+              ctx,
+              token,
+              chatId,
+              config.errorsTopicId || config.digestTopicId,
+            );
 
             await sendMessage(ctx, token, chatId, text, {
               parseMode: "MarkdownV2",
@@ -728,6 +765,10 @@ const plugin = definePlugin({
   async onValidateConfig(config) {
     if (!config.telegramBotTokenRef || typeof config.telegramBotTokenRef !== "string") {
       return { ok: false, errors: ["telegramBotTokenRef is required"] };
+    }
+    const topicErrors = validateConfiguredTopicIds(config as Record<string, unknown>);
+    if (topicErrors.length > 0) {
+      return { ok: false, errors: topicErrors };
     }
     return { ok: true };
   },

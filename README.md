@@ -128,6 +128,12 @@ This is that plugin.
 - Notifications for a project are routed to its mapped topic
 - Requires a group with forum topics enabled
 
+### Notification topic routing
+- `approvalsTopicId` routes approval notifications to a dedicated forum topic.
+- `errorsTopicId` routes agent error notifications to a dedicated forum topic.
+- `digestTopicId` routes daily/bidaily/tridaily digest notifications to a dedicated forum topic.
+- If a topic ID is empty, the plugin keeps its existing behavior. Digest messages in forum groups fall back to the General topic.
+
 ## Install
 
 ```bash
@@ -158,7 +164,10 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `telegramBotTokenRef` | Yes | Secret UUID for your bot token |
 | `defaultChatId` | No | Fallback chat ID for notifications |
 | `approvalsChatId` | No | Separate chat for approvals |
+| `approvalsTopicId` | No | Forum topic ID for approvals inside the selected approvals/default chat |
 | `errorsChatId` | No | Separate chat for errors |
+| `errorsTopicId` | No | Forum topic ID for errors inside the selected errors/default chat |
+| `digestTopicId` | No | Forum topic ID for digests inside the selected company/default chat |
 | `escalationChatId` | No | Dedicated chat for agent escalations |
 | `paperclipBaseUrl` | No | Internal Paperclip API URL (default: http://localhost:3100) |
 | `paperclipPublicUrl` | No | Public URL for issue links in messages |

@@ -80,12 +80,33 @@ const manifest: PaperclipPluginManifestV1 = {
           "Chat ID for approval requests. Falls back to default chat.",
         default: DEFAULT_CONFIG.approvalsChatId,
       },
+      approvalsTopicId: {
+        type: "string",
+        title: "Approvals topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for approval notifications inside the selected approvals/default chat.",
+        default: DEFAULT_CONFIG.approvalsTopicId,
+      },
       errorsChatId: {
         type: "string",
         title: "Errors Chat ID",
         description:
           "Chat ID for agent error notifications. Falls back to default chat.",
         default: DEFAULT_CONFIG.errorsChatId,
+      },
+      errorsTopicId: {
+        type: "string",
+        title: "Errors topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for agent error notifications inside the selected errors/default chat.",
+        default: DEFAULT_CONFIG.errorsTopicId,
+      },
+      digestTopicId: {
+        type: "string",
+        title: "Digest topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for digest notifications inside the selected company/default chat.",
+        default: DEFAULT_CONFIG.digestTopicId,
       },
       escalationChatId: {
         type: "string",
