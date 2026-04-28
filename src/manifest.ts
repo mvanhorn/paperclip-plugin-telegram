@@ -137,6 +137,20 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on agent error",
         default: DEFAULT_CONFIG.notifyOnAgentError,
       },
+      notifyOnAgentRunStarted: {
+        type: "boolean",
+        title: "Notify on agent run started",
+        description:
+          "Send a message every time an agent heartbeat run starts. Off by default — these fire on every heartbeat tick and can be very noisy, especially with the issue continuation watchdog or scheduled cycles.",
+        default: DEFAULT_CONFIG.notifyOnAgentRunStarted,
+      },
+      notifyOnAgentRunFinished: {
+        type: "boolean",
+        title: "Notify on agent run finished",
+        description:
+          "Send a message every time an agent heartbeat run completes successfully. Off by default — see notifyOnAgentRunStarted. Failures are still covered by notifyOnAgentError.",
+        default: DEFAULT_CONFIG.notifyOnAgentRunFinished,
+      },
 
       // --- Digest ---
       digestMode: {

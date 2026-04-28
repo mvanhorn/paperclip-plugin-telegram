@@ -14,6 +14,8 @@ export const DEFAULT_CONFIG = {
   onlyNotifyIfAssignedTo: "",
   notifyOnApprovalCreated: true,
   notifyOnAgentError: true,
+  notifyOnAgentRunStarted: false,
+  notifyOnAgentRunFinished: false,
   enableCommands: true,
   enableInbound: true,
   allowedTelegramUserIds: [] as string[],
