@@ -44,6 +44,7 @@ import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
 import { resolvePaperclipApiBaseUrl } from "./paperclip-api.js";
+import { createIgorRecoveryIssueForRunFailure } from "./recovery.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -476,9 +477,16 @@ const plugin = definePlugin({
     }
 
     if (config.notifyOnAgentError) {
-      ctx.events.on("agent.run.failed", (event: PluginEvent) =>
-        notify(event, formatAgentError, config.errorsChatId),
-      );
+      ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
+        await notify(event, formatAgentError, config.errorsChatId);
+        try {
+          await createIgorRecoveryIssueForRunFailure(ctx, event, baseUrl);
+        } catch (err) {
+          ctx.logger.error("Failed to route agent failure to Igor recovery issue", {
+            error: String(err),
+          });
+        }
+      });
     }
 
     ctx.events.on("agent.run.started", (event: PluginEvent) =>
