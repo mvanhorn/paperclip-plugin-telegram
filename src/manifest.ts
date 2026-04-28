@@ -137,6 +137,20 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on agent error",
         default: DEFAULT_CONFIG.notifyOnAgentError,
       },
+      notifyOnAgentRunStarted: {
+        type: "boolean",
+        title: "Notify on agent run started",
+        description:
+          "Send a Telegram message every time an agent begins a heartbeat run. Disabled by default — agents run frequently and this is usually noise.",
+        default: DEFAULT_CONFIG.notifyOnAgentRunStarted,
+      },
+      notifyOnAgentRunFinished: {
+        type: "boolean",
+        title: "Notify on agent run finished",
+        description:
+          "Send a Telegram message every time an agent run completes successfully. Disabled by default — agents run frequently and this is usually noise.",
+        default: DEFAULT_CONFIG.notifyOnAgentRunFinished,
+      },
 
       // --- Digest ---
       digestMode: {

@@ -57,6 +57,8 @@ type TelegramConfig = {
   onlyNotifyIfAssignedTo: string;
   notifyOnApprovalCreated: boolean;
   notifyOnAgentError: boolean;
+  notifyOnAgentRunStarted: boolean;
+  notifyOnAgentRunFinished: boolean;
   enableCommands: boolean;
   enableInbound: boolean;
   allowedTelegramUserIds: string[];
@@ -480,12 +482,28 @@ const plugin = definePlugin({
       );
     }
 
-    ctx.events.on("agent.run.started", (event: PluginEvent) =>
-      notify(event, formatAgentRunStarted),
-    );
-    ctx.events.on("agent.run.finished", (event: PluginEvent) =>
-      notify(event, formatAgentRunFinished),
-    );
+    const enrichAgentName = async (event: PluginEvent) => {
+      const payload = event.payload as Record<string, unknown>;
+      if (payload.agentId && !payload.agentName) {
+        try {
+          const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+          if (agent) payload.agentName = agent.name;
+        } catch { /* best effort */ }
+      }
+    };
+
+    if (config.notifyOnAgentRunStarted) {
+      ctx.events.on("agent.run.started", async (event: PluginEvent) => {
+        await enrichAgentName(event);
+        await notify(event, formatAgentRunStarted);
+      });
+    }
+    if (config.notifyOnAgentRunFinished) {
+      ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
+        await enrichAgentName(event);
+        await notify(event, formatAgentRunFinished);
+      });
+    }
 
     // --- Per-company chat overrides ---
 
