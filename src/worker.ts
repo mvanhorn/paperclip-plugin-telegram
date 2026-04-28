@@ -39,7 +39,7 @@ import { handleMediaMessage } from "./media-pipeline.js";
 import { getPersistedTelegramUpdateOffset, persistTelegramUpdateOffset } from "./polling-offset.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
-import { METRIC_NAMES } from "./constants.js";
+import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
@@ -140,6 +140,13 @@ function makeUpdateDedupe(windowMs = 5_000, maxEntries = 500) {
     }
     return true;
   };
+}
+
+function normalizeAgentErrorMessage(input: unknown): string {
+  return String(input ?? "Unknown error")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 500);
 }
 
 async function resolveChat(
@@ -477,9 +484,15 @@ const plugin = definePlugin({
     }
 
     if (config.notifyOnAgentError) {
-      ctx.events.on("agent.run.failed", (event: PluginEvent) =>
-        notify(event, formatAgentError, config.errorsChatId),
-      );
+      const agentErrorDedupe = makeUpdateDedupe(AGENT_ERROR_DEDUPLICATION_WINDOW_MS, 1000);
+      ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        const agentId = String(payload.agentId ?? event.entityId);
+        const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
+        const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
+        if (!agentErrorDedupe(dedupeKey)) return;
+        await notify(event, formatAgentError, config.errorsChatId);
+      });
     }
 
     const enrichAgentName = async (event: PluginEvent) => {

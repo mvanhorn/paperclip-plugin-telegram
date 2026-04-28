@@ -38,6 +38,8 @@ export const DEFAULT_CONFIG = {
   watchDeduplicationWindowMs: 86400000, // 24h
 } as const;
 
+export const AGENT_ERROR_DEDUPLICATION_WINDOW_MS = 30 * 60 * 1000;
+
 export const MAX_AGENTS_PER_THREAD = 5;
 export const MAX_CONVERSATION_TURNS = 50;
 export const DEFAULT_CONVERSATION_TURNS = 10;
