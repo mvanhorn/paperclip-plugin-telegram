@@ -43,19 +43,27 @@ import { METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
+import { shouldNotifyApproval } from "./approval-routing.js";
+import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
   defaultChatId: string;
   approvalsChatId: string;
+  approvalsTopicId: string;
   errorsChatId: string;
+  errorsTopicId: string;
+  digestChatId: string;
+  digestTopicId: string;
   paperclipBaseUrl: string;
+  paperclipBoardApiTokenRef: string;
   paperclipPublicUrl: string;
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
   notifyOnIssueAssigned: boolean;
   onlyNotifyIfAssignedTo: string;
   notifyOnApprovalCreated: boolean;
+  onlyNotifyBoardApprovals: boolean;
   notifyOnAgentError: boolean;
   enableCommands: boolean;
   enableInbound: boolean;
@@ -114,6 +122,123 @@ type TelegramUpdate = {
 };
 
 const TELEGRAM_API = "https://api.telegram.org";
+const BOARD_ACCESS_SCOPE = {
+  scopeKind: "instance",
+  stateKey: "telegram.board-access.v1",
+} as const;
+
+type TelegramBoardAccessState = {
+  paperclipBoardApiTokenRef: string | null;
+  identity: string | null;
+  companyId: string | null;
+  updatedAt: string | null;
+};
+
+type TelegramBoardAccessRegistration = TelegramBoardAccessState & {
+  configured: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeBoardAccessState(value: unknown): TelegramBoardAccessState {
+  const record = isRecord(value) ? value : {};
+  return {
+    paperclipBoardApiTokenRef: asNonEmptyString(record.paperclipBoardApiTokenRef),
+    identity: asNonEmptyString(record.identity),
+    companyId: asNonEmptyString(record.companyId),
+    updatedAt: asNonEmptyString(record.updatedAt),
+  };
+}
+
+async function loadBoardAccessState(ctx: PluginContext): Promise<TelegramBoardAccessState> {
+  return normalizeBoardAccessState(await ctx.state.get(BOARD_ACCESS_SCOPE));
+}
+
+async function persistBoardAccessState(
+  ctx: PluginContext,
+  state: TelegramBoardAccessState,
+): Promise<TelegramBoardAccessRegistration> {
+  const nextState = normalizeBoardAccessState(state);
+  await ctx.state.set(BOARD_ACCESS_SCOPE, nextState);
+  return {
+    ...nextState,
+    configured: Boolean(nextState.paperclipBoardApiTokenRef),
+  };
+}
+
+function getBoardAccessRegistration(
+  state: TelegramBoardAccessState,
+): TelegramBoardAccessRegistration {
+  return {
+    ...state,
+    configured: Boolean(state.paperclipBoardApiTokenRef),
+  };
+}
+
+async function resolveBoardApiToken(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  companyId?: string | null,
+): Promise<string | undefined> {
+  const boardAccessState = await loadBoardAccessState(ctx);
+  const candidates: Array<{ source: string; ref: string }> = [];
+
+  if (
+    boardAccessState.paperclipBoardApiTokenRef &&
+    (!companyId || !boardAccessState.companyId || boardAccessState.companyId === companyId)
+  ) {
+    candidates.push({
+      source: "board-access",
+      ref: boardAccessState.paperclipBoardApiTokenRef,
+    });
+  }
+
+  if (config.paperclipBoardApiTokenRef) {
+    candidates.push({
+      source: "config",
+      ref: config.paperclipBoardApiTokenRef,
+    });
+  }
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.ref)) continue;
+    seen.add(candidate.ref);
+    try {
+      return await ctx.secrets.resolve(candidate.ref);
+    } catch (err) {
+      ctx.logger.warn("Failed to resolve board API token secret", {
+        source: candidate.source,
+        companyId,
+        error: String(err),
+      });
+    }
+  }
+
+  return undefined;
+}
+
+async function resolveCallbackCompanyId(
+  ctx: PluginContext,
+  query: NonNullable<TelegramUpdate["callback_query"]>,
+): Promise<string | null> {
+  const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
+  const messageId = query.message?.message_id;
+  if (!chatId || !messageId) return null;
+
+  const mapping = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: `msg_${chatId}_${messageId}`,
+  }) as { companyId?: string } | null;
+
+  return mapping?.companyId ?? null;
+}
 
 /**
  * Shared 5s sliding-window dedupe for issue.updated handlers.
@@ -153,6 +278,36 @@ async function resolveChat(
   return (override as string) ?? fallback ?? null;
 }
 
+function parseTopicId(value?: string): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  return Number(trimmed);
+}
+
+function validateConfiguredTopicIds(config: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  for (const key of ["approvalsTopicId", "errorsTopicId", "digestTopicId"]) {
+    const value = config[key];
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string" || !parseTopicId(value)) {
+      errors.push(`${key} must be a numeric Telegram forum topic ID string.`);
+    }
+  }
+  return errors;
+}
+
+async function resolveDigestThreadId(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  configuredTopicId?: string,
+): Promise<number | undefined> {
+  const configured = parseTopicId(configuredTopicId);
+  if (configured) return configured;
+  return await isForum(ctx, token, chatId) ? GENERAL_TOPIC_THREAD_ID : undefined;
+}
+
 async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<string> {
   const mapping = await ctx.state.get({
     scopeKind: "instance",
@@ -168,6 +323,23 @@ const plugin = definePlugin({
     const config = rawConfig as unknown as TelegramConfig;
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
     const publicUrl = config.paperclipPublicUrl || baseUrl;
+
+    ctx.data.register("board-access.read", async () => getBoardAccessRegistration(await loadBoardAccessState(ctx)));
+
+    ctx.actions.register("board-access.update", async (params) => {
+      const record = isRecord(params) ? params : {};
+      const paperclipBoardApiTokenRef = asNonEmptyString(record.paperclipBoardApiTokenRef);
+      const identity = asNonEmptyString(record.identity);
+      const companyId = asNonEmptyString(record.companyId);
+      const now = new Date().toISOString();
+
+      return persistBoardAccessState(ctx, {
+        paperclipBoardApiTokenRef,
+        identity,
+        companyId,
+        updatedAt: now,
+      });
+    });
 
     if (!config.telegramBotTokenRef) {
       ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled");
@@ -278,6 +450,7 @@ const plugin = definePlugin({
       event: PluginEvent,
       formatter: (e: PluginEvent, opts?: IssueLinksOpts) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
       overrideChatId?: string,
+      overrideTopicId?: string,
     ) => {
       const chatId = await resolveChat(
         ctx,
@@ -288,8 +461,10 @@ const plugin = definePlugin({
       const linksOpts = await resolveIssueLinksOpts(event.companyId);
       const msg = formatter(event, linksOpts);
 
-      let messageThreadId: number | undefined;
-      messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, config.topicRouting);
+      let messageThreadId = parseTopicId(overrideTopicId);
+      if (!messageThreadId) {
+        messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, config.topicRouting);
+      }
 
       if (messageThreadId) {
         msg.options.messageThreadId = messageThreadId;
@@ -431,6 +606,7 @@ const plugin = definePlugin({
 
     if (config.notifyOnApprovalCreated) {
       ctx.events.on("approval.created", async (event: PluginEvent) => {
+        if (!shouldNotifyApproval(event, config.onlyNotifyBoardApprovals)) return;
         const payload = event.payload as Record<string, unknown>;
         // Enrich with linked issue details (event only has issueIds)
         const issueIds = Array.isArray(payload.issueIds) ? payload.issueIds as string[] : [];
@@ -470,13 +646,13 @@ const plugin = definePlugin({
             ? `${approvalType} — ${agentLabel}`
             : approvalType;
         }
-        await notify(event, formatApprovalCreated, config.approvalsChatId);
+        await notify(event, formatApprovalCreated, config.approvalsChatId, config.approvalsTopicId);
       });
     }
 
     if (config.notifyOnAgentError) {
       ctx.events.on("agent.run.failed", (event: PluginEvent) =>
-        notify(event, formatAgentError, config.errorsChatId),
+        notify(event, formatAgentError, config.errorsChatId, config.errorsTopicId),
       );
     }
 
@@ -546,7 +722,7 @@ const plugin = definePlugin({
 
         const companies = await ctx.companies.list();
         for (const company of companies) {
-          const chatId = await resolveChat(ctx, company.id, config.defaultChatId);
+          const chatId = await resolveChat(ctx, company.id, config.digestChatId || config.defaultChatId);
           if (!chatId) continue;
 
           try {
@@ -605,9 +781,7 @@ const plugin = definePlugin({
               for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
             }
 
-            const digestThreadId = await isForum(ctx, token, chatId)
-              ? GENERAL_TOPIC_THREAD_ID
-              : undefined;
+            const digestThreadId = await resolveDigestThreadId(ctx, token, chatId, config.digestTopicId);
 
             await sendMessage(ctx, token, chatId, lines.join("\n"), {
               parseMode: "MarkdownV2",
@@ -621,9 +795,12 @@ const plugin = definePlugin({
               escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
             ].join("\n");
 
-            const errorThreadId = await isForum(ctx, token, chatId)
-              ? GENERAL_TOPIC_THREAD_ID
-              : undefined;
+            const errorThreadId = await resolveDigestThreadId(
+              ctx,
+              token,
+              chatId,
+              config.errorsTopicId || config.digestTopicId,
+            );
 
             await sendMessage(ctx, token, chatId, text, {
               parseMode: "MarkdownV2",
@@ -837,6 +1014,10 @@ const plugin = definePlugin({
     if (allowlistErrors.length > 0) {
       return { ok: false, errors: allowlistErrors };
     }
+    const topicErrors = validateConfiguredTopicIds(config as Record<string, unknown>);
+    if (topicErrors.length > 0) {
+      return { ok: false, errors: topicErrors };
+    }
     return { ok: true };
   },
 
@@ -852,6 +1033,7 @@ async function handleUpdate(
   update: TelegramUpdate,
   baseUrl: string,
   publicUrl?: string,
+  boardApiToken?: string,
 ): Promise<void> {
   if (!isTelegramUpdateAllowed(config, update)) {
     const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
@@ -865,7 +1047,9 @@ async function handleUpdate(
   }
 
   if (update.callback_query) {
-    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl);
+    const companyId = await resolveCallbackCompanyId(ctx, update.callback_query);
+    const boardApiToken = await resolveBoardApiToken(ctx, config, companyId);
+    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl, boardApiToken);
     return;
   }
 
@@ -920,7 +1104,8 @@ async function handleUpdate(
     if (handledCustom) return;
 
     // Built-in commands
-    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId);
+    const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, config, companyId) : undefined;
+    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken);
     return;
   }
 
@@ -971,6 +1156,7 @@ async function handleCallbackQuery(
   token: string,
   query: NonNullable<TelegramUpdate["callback_query"]>,
   baseUrl: string,
+  boardApiToken?: string,
 ): Promise<void> {
   const data = query.data;
   if (!data) return;
@@ -984,11 +1170,15 @@ async function handleCallbackQuery(
     ctx.logger.info("Approval button clicked", { approvalId, actor });
 
     try {
-      await ctx.http.fetch(
+      await fetchPaperclipApi(
+        ctx,
         `${baseUrl}/api/approvals/${approvalId}/approve`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...buildPaperclipAuthHeaders(boardApiToken),
+          },
           body: JSON.stringify({ decidedByUserId: `telegram:${actor}` }),
         },
       );
@@ -1035,11 +1225,15 @@ async function handleCallbackQuery(
     ctx.logger.info("Rejection button clicked", { approvalId, actor });
 
     try {
-      await ctx.http.fetch(
+      await fetchPaperclipApi(
+        ctx,
         `${baseUrl}/api/approvals/${approvalId}/reject`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...buildPaperclipAuthHeaders(boardApiToken),
+          },
           body: JSON.stringify({ decidedByUserId: `telegram:${actor}` }),
         },
       );

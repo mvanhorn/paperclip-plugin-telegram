@@ -34,9 +34,22 @@ const manifest: PaperclipPluginManifestV1 = {
     "activity.log.write",
     "metrics.write",
     "jobs.schedule",
+    "instance.settings.register",
+    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
+    ui: "./dist/ui",
+  },
+  ui: {
+    slots: [
+      {
+        type: "settingsPage",
+        id: "telegram-settings",
+        displayName: "Telegram Settings",
+        exportName: "TelegramSettingsPage",
+      },
+    ],
   },
   instanceConfigSchema: {
     type: "object",
@@ -56,6 +69,14 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Internal URL of the Paperclip API server. Used for API calls (approvals, comments). Keep as localhost for same-server deployments.",
         default: DEFAULT_CONFIG.paperclipBaseUrl,
+      },
+      paperclipBoardApiTokenRef: {
+        type: "string",
+        format: "secret-ref",
+        title: "Paperclip Board API Token (secret reference)",
+        description:
+          "Secret UUID for a Paperclip board API token. Used by Telegram approval buttons and /approve commands to resolve approvals as a board actor.",
+        default: DEFAULT_CONFIG.paperclipBoardApiTokenRef,
       },
       paperclipPublicUrl: {
         type: "string",
@@ -80,12 +101,40 @@ const manifest: PaperclipPluginManifestV1 = {
           "Chat ID for approval requests. Falls back to default chat.",
         default: DEFAULT_CONFIG.approvalsChatId,
       },
+      approvalsTopicId: {
+        type: "string",
+        title: "Approvals topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for approval notifications inside the selected approvals/default chat.",
+        default: DEFAULT_CONFIG.approvalsTopicId,
+      },
       errorsChatId: {
         type: "string",
         title: "Errors Chat ID",
         description:
           "Chat ID for agent error notifications. Falls back to default chat.",
         default: DEFAULT_CONFIG.errorsChatId,
+      },
+      errorsTopicId: {
+        type: "string",
+        title: "Errors topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for agent error notifications inside the selected errors/default chat.",
+        default: DEFAULT_CONFIG.errorsTopicId,
+      },
+      digestChatId: {
+        type: "string",
+        title: "Digest Chat ID",
+        description:
+          "Chat ID for digest notifications. Falls back to the company/default chat.",
+        default: DEFAULT_CONFIG.digestChatId,
+      },
+      digestTopicId: {
+        type: "string",
+        title: "Digest topic ID",
+        description:
+          "Optional Telegram forum topic/thread ID for digest notifications inside the selected digest/company/default chat.",
+        default: DEFAULT_CONFIG.digestTopicId,
       },
       escalationChatId: {
         type: "string",
@@ -131,6 +180,13 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "boolean",
         title: "Notify on approval requested",
         default: DEFAULT_CONFIG.notifyOnApprovalCreated,
+      },
+      onlyNotifyBoardApprovals: {
+        type: "boolean",
+        title: "Only notify board approval requests",
+        description:
+          "When enabled, Telegram approval notifications are sent only for request_board_approval approvals. Leave disabled to notify for every approval request.",
+        default: DEFAULT_CONFIG.onlyNotifyBoardApprovals,
       },
       notifyOnAgentError: {
         type: "boolean",
