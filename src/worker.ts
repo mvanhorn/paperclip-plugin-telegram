@@ -43,6 +43,7 @@ import { METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
+import { resolvePaperclipApiBaseUrl } from "./paperclip-api.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -865,7 +866,7 @@ async function handleUpdate(
   }
 
   if (update.callback_query) {
-    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl);
+    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl, publicUrl);
     return;
   }
 
@@ -971,6 +972,7 @@ async function handleCallbackQuery(
   token: string,
   query: NonNullable<TelegramUpdate["callback_query"]>,
   baseUrl: string,
+  publicUrl?: string,
 ): Promise<void> {
   const data = query.data;
   if (!data) return;
@@ -978,6 +980,7 @@ async function handleCallbackQuery(
   const actor = query.from.username ?? query.from.first_name ?? String(query.from.id);
   const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
   const messageId = query.message?.message_id;
+  const apiBaseUrl = resolvePaperclipApiBaseUrl(baseUrl, publicUrl);
 
   if (data.startsWith("approve_")) {
     const approvalId = data.replace("approve_", "");
@@ -985,7 +988,7 @@ async function handleCallbackQuery(
 
     try {
       await ctx.http.fetch(
-        `${baseUrl}/api/approvals/${approvalId}/approve`,
+        `${apiBaseUrl}/api/approvals/${approvalId}/approve`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1036,7 +1039,7 @@ async function handleCallbackQuery(
 
     try {
       await ctx.http.fetch(
-        `${baseUrl}/api/approvals/${approvalId}/reject`,
+        `${apiBaseUrl}/api/approvals/${approvalId}/reject`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

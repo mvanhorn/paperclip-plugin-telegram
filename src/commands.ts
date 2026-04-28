@@ -2,6 +2,7 @@ import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@papercl
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import { handleAcpCommand } from "./acp-bridge.js";
+import { resolvePaperclipApiBaseUrl } from "./paperclip-api.js";
 
 type BotCommand = {
   command: string;
@@ -58,7 +59,7 @@ export async function handleCommand(
       await handleAgents(ctx, token, chatId, messageThreadId, publicUrl, companyId);
       break;
     case "approve":
-      await handleApprove(ctx, token, chatId, args, messageThreadId, baseUrl);
+      await handleApprove(ctx, token, chatId, args, messageThreadId, baseUrl, publicUrl);
       break;
     case "help":
       await handleHelp(ctx, token, chatId, messageThreadId);
@@ -237,6 +238,7 @@ async function handleApprove(
   approvalId: string,
   messageThreadId?: number,
   baseUrl: string = "http://localhost:3100",
+  publicUrl?: string,
 ): Promise<void> {
   if (!approvalId.trim()) {
     await sendMessage(ctx, token, chatId, "Usage: /approve <approval-id>", {
@@ -247,7 +249,7 @@ async function handleApprove(
 
   try {
     await ctx.http.fetch(
-      `${baseUrl}/api/approvals/${approvalId.trim()}/approve`,
+      `${resolvePaperclipApiBaseUrl(baseUrl, publicUrl)}/api/approvals/${approvalId.trim()}/approve`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
