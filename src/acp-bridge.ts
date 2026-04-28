@@ -88,13 +88,14 @@ export async function handleAcpCommand(
   args: string,
   messageThreadId?: number,
   companyId?: string,
+  maxAgentsPerThread = MAX_AGENTS_PER_THREAD,
 ): Promise<void> {
   const parts = args.trim().split(/\s+/);
   const subcommand = parts[0]?.toLowerCase() ?? "";
 
   switch (subcommand) {
     case "spawn":
-      await handleAcpSpawn(ctx, token, chatId, parts.slice(1).join(" "), messageThreadId, companyId);
+      await handleAcpSpawn(ctx, token, chatId, parts.slice(1).join(" "), messageThreadId, companyId, maxAgentsPerThread);
       break;
     case "status":
       await handleAcpStatus(ctx, token, chatId, messageThreadId);
@@ -227,6 +228,7 @@ async function handleAcpSpawn(
   agentName: string,
   messageThreadId?: number,
   companyId?: string,
+  maxAgentsPerThread = MAX_AGENTS_PER_THREAD,
 ): Promise<void> {
   if (!agentName.trim()) {
     await sendMessage(ctx, token, chatId, "Usage: /acp spawn <agent-name>", {
@@ -249,13 +251,13 @@ async function handleAcpSpawn(
   const sessions = await getSessions(ctx, chatId, messageThreadId);
   const activeSessions = sessions.filter((s) => s.status === "active");
 
-  if (activeSessions.length >= MAX_AGENTS_PER_THREAD) {
+  if (activeSessions.length >= maxAgentsPerThread) {
     const listing = activeSessions.map((s) => `  - ${s.agentDisplayName} (${s.transport})`).join("\n");
     await sendMessage(
       ctx,
       token,
       chatId,
-      `Thread already has ${MAX_AGENTS_PER_THREAD} active agents (max):\n${listing}`,
+      `Thread already has ${maxAgentsPerThread} active agents (max):\n${listing}`,
       { messageThreadId },
     );
     return;
