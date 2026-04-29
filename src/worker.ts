@@ -540,14 +540,14 @@ const plugin = definePlugin({
         const payload = event.payload as Record<string, unknown>;
         const interaction = asRecord(payload.interaction ?? payload.threadInteraction ?? payload);
         const interactionPayload = asRecord(interaction.payload ?? payload.payload);
-        const kind = firstNonEmptyString(interaction.kind, payload.kind);
+        const kind = firstNonEmptyString(interaction.kind, payload.kind, payload.interactionKind);
         if (kind !== "request_confirmation") return;
 
-        const status = firstNonEmptyString(interaction.status, payload.status, interactionPayload.status);
+        const status = firstNonEmptyString(interaction.status, payload.status, payload.interactionStatus, interactionPayload.status);
         if (status && status !== "pending") return;
 
-        const interactionId = firstNonEmptyString(interaction.id, payload.interactionId, event.entityId);
-        const issueId = firstNonEmptyString(payload.issueId, interaction.issueId, interactionPayload.issueId);
+        const interactionId = firstNonEmptyString(interaction.id, payload.interactionId);
+        const issueId = firstNonEmptyString(payload.issueId, interaction.issueId, interactionPayload.issueId, event.entityType === "issue" ? event.entityId : undefined);
         if (!interactionId || !issueId) {
           ctx.logger.error("Cannot notify request_confirmation without interaction and issue ids", {
             eventId: event.eventId,
