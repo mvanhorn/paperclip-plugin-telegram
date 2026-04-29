@@ -4,6 +4,7 @@ import {
   formatIssueDone,
   formatIssueAssigned,
   formatApprovalCreated,
+  formatIssueRequestConfirmation,
   formatAgentError,
   formatAgentRunStarted,
   formatAgentRunFinished,
@@ -223,6 +224,63 @@ describe("formatApprovalCreated", () => {
     const longDesc = Array(80).fill("word").join(" ");
     const msg = formatApprovalCreated(mockEvent({ description: longDesc }));
     expect(msg.text).toContain("\\.\\.\\.");
+  });
+});
+
+describe("formatIssueRequestConfirmation", () => {
+  it("includes issue link and accept/reject buttons", () => {
+    const msg = formatIssueRequestConfirmation(mockEvent({
+      eventType: "issue.thread_interaction_created",
+      entityId: "int-123",
+      interaction: {
+        id: "int-123",
+        kind: "request_confirmation",
+        title: "Restart approval",
+        payload: {
+          prompt: "Approve restarting Paperclip?",
+          acceptLabel: "Approve restart",
+          rejectLabel: "Do not restart",
+        },
+      },
+      issueIdentifier: "CHO-781",
+      issueTitle: "Add structured review guards",
+    }));
+
+    expect(msg.text).toContain("Confirmation Requested");
+    expect(msg.text).toContain("CHO\\-781");
+    expect(msg.text).toContain("Restart approval");
+    expect(msg.text).toContain("Approve restarting Paperclip");
+    expect(msg.options.inlineKeyboard).toBeDefined();
+    expect(msg.options.inlineKeyboard![0][0]).toEqual({
+      text: "Approve restart",
+      callback_data: "confirm_accept_int-123",
+    });
+    expect(msg.options.inlineKeyboard![0][1]).toEqual({
+      text: "Do not restart",
+      callback_data: "confirm_reject_int-123",
+    });
+  });
+
+  it("uses an issue link for reject when a rejection reason is required", () => {
+    const msg = formatIssueRequestConfirmation(mockEvent({
+      entityId: "int-456",
+      interaction: {
+        id: "int-456",
+        kind: "request_confirmation",
+        title: "Plan approval",
+        payload: {
+          rejectLabel: "Request changes",
+          rejectRequiresReason: true,
+        },
+      },
+      issueIdentifier: "CHO-788",
+    }), { baseUrl: "https://paperclip.example", issuePrefix: "CHO" });
+
+    expect(msg.options.inlineKeyboard![0][0].callback_data).toBe("confirm_accept_int-456");
+    expect(msg.options.inlineKeyboard![1][0]).toEqual({
+      text: "Request changes",
+      url: "https://paperclip.example/CHO/issues/CHO-788",
+    });
   });
 });
 

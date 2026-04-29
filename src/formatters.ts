@@ -237,6 +237,62 @@ export function formatApprovalCreated(event: PluginEvent, opts?: IssueLinksOpts)
   };
 }
 
+function asPayload(value: unknown): Payload {
+  return value && typeof value === "object" ? value as Payload : {};
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+export function formatIssueRequestConfirmation(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
+  const p = event.payload as Payload;
+  const interaction = asPayload(p.interaction ?? p.threadInteraction ?? p);
+  const payload = asPayload(interaction.payload ?? p.payload);
+  const issue = asPayload(p.issue);
+
+  const interactionId = firstString(interaction.id, p.interactionId, event.entityId) ?? "unknown";
+  const identifier = firstString(p.issueIdentifier, issue.identifier, payload.issueIdentifier, p.identifier, event.entityId) ?? "issue";
+  const issueTitle = firstString(p.issueTitle, issue.title, payload.issueTitle, p.title);
+  const title = firstString(interaction.title, payload.title) ?? "Confirmation Requested";
+  const prompt = firstString(payload.prompt, interaction.prompt, p.prompt, interaction.description, p.description);
+  const details = firstString(payload.detailsMarkdown, payload.details, interaction.detailsMarkdown);
+  const acceptLabel = firstString(payload.acceptLabel, interaction.acceptLabel) ?? "Accept";
+  const rejectLabel = firstString(payload.rejectLabel, interaction.rejectLabel) ?? "Reject";
+  const rejectRequiresReason = payload.rejectRequiresReason === true || interaction.rejectRequiresReason === true;
+
+  const lines: string[] = [
+    `${esc("🔔")} ${bold("Confirmation Requested")}: ${issueLink(identifier, opts)}`,
+    bold(title),
+  ];
+
+  if (issueTitle) lines.push(esc(issueTitle));
+  if (prompt) lines.push(`\n${esc(truncateAtWord(prompt, 300))}`);
+  if (details) lines.push(`\n${esc(truncateAtWord(details, 350))}`);
+
+  const keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>> = [
+    [{ text: acceptLabel, callback_data: `confirm_accept_${interactionId}` }],
+  ];
+  const button = issueButton(identifier, opts);
+  if (rejectRequiresReason) {
+    if (button) keyboard.push([{ text: rejectLabel, url: button.url }]);
+  } else {
+    keyboard[0]!.push({ text: rejectLabel, callback_data: `confirm_reject_${interactionId}` });
+  }
+  if (button) keyboard.push([button]);
+
+  return {
+    text: lines.join("\n"),
+    options: {
+      parseMode: "MarkdownV2",
+      inlineKeyboard: keyboard,
+    },
+  };
+}
+
 export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);

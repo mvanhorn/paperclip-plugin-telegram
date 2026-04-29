@@ -21,6 +21,7 @@ import {
   formatIssueDone,
   formatIssueAssigned,
   formatApprovalCreated,
+  formatIssueRequestConfirmation,
   formatAgentError,
   formatAgentRunStarted,
   formatAgentRunFinished,
@@ -143,6 +144,17 @@ function makeUpdateDedupe(windowMs = 5_000, maxEntries = 500) {
     }
     return true;
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
 }
 
 async function resolveChat(
@@ -521,6 +533,50 @@ const plugin = definePlugin({
             : approvalType;
         }
         await notify(event, formatApprovalCreated, config.approvalsChatId);
+      });
+
+      const confirmationDedupe = makeUpdateDedupe(60_000, 500);
+      ctx.events.on("issue.thread_interaction_created" as never, async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        const interaction = asRecord(payload.interaction ?? payload.threadInteraction ?? payload);
+        const interactionPayload = asRecord(interaction.payload ?? payload.payload);
+        const kind = firstNonEmptyString(interaction.kind, payload.kind);
+        if (kind !== "request_confirmation") return;
+
+        const status = firstNonEmptyString(interaction.status, payload.status, interactionPayload.status);
+        if (status && status !== "pending") return;
+
+        const interactionId = firstNonEmptyString(interaction.id, payload.interactionId, event.entityId);
+        const issueId = firstNonEmptyString(payload.issueId, interaction.issueId, interactionPayload.issueId);
+        if (!interactionId || !issueId) {
+          ctx.logger.error("Cannot notify request_confirmation without interaction and issue ids", {
+            eventId: event.eventId,
+            eventType: event.eventType,
+          });
+          return;
+        }
+
+        const idempotencyKey = firstNonEmptyString(interaction.idempotencyKey, payload.idempotencyKey);
+        const dedupeKey = idempotencyKey ?? `${issueId}|${interactionId}`;
+        if (!confirmationDedupe(dedupeKey)) return;
+
+        await ctx.state.set(
+          { scopeKind: "instance", stateKey: `confirmation_${interactionId}` },
+          { issueId, interactionId, companyId: event.companyId },
+        );
+
+        if ((!payload.identifier || !payload.title) && issueId) {
+          try {
+            const issue = await ctx.issues.get(issueId, event.companyId);
+            if (issue) {
+              payload.identifier ??= issue.identifier;
+              payload.issueIdentifier ??= issue.identifier;
+              payload.issueTitle ??= issue.title;
+            }
+          } catch { /* best effort */ }
+        }
+
+        await notify(event, formatIssueRequestConfirmation, config.approvalsChatId);
       });
     }
 
@@ -1004,6 +1060,52 @@ async function handleCallbackQuery(
   const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
   const messageId = query.message?.message_id;
   const apiBaseUrl = resolvePaperclipApiBaseUrl(baseUrl, publicUrl);
+
+  if (data.startsWith("confirm_accept_") || data.startsWith("confirm_reject_")) {
+    const accepting = data.startsWith("confirm_accept_");
+    const interactionId = data.replace(accepting ? "confirm_accept_" : "confirm_reject_", "");
+    const mapping = (await ctx.state.get({
+      scopeKind: "instance",
+      stateKey: `confirmation_${interactionId}`,
+    })) as { issueId?: string; interactionId?: string } | null;
+    const issueId = mapping?.issueId;
+    if (!issueId) {
+      await answerCallbackQuery(ctx, token, query.id, "Open Paperclip to decide this confirmation");
+      return;
+    }
+
+    const action = accepting ? "accept" : "reject";
+    ctx.logger.info("Confirmation button clicked", { interactionId, issueId, action, actor });
+
+    try {
+      await ctx.http.fetch(
+        `${apiBaseUrl}/api/issues/${issueId}/interactions/${interactionId}/${action}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decidedByUserId: `telegram:${actor}` }),
+        },
+      );
+
+      await answerCallbackQuery(ctx, token, query.id, accepting ? "Accepted" : "Rejected");
+
+      if (chatId && messageId) {
+        await editMessage(
+          ctx,
+          token,
+          chatId,
+          messageId,
+          accepting
+            ? `${escapeMarkdownV2("✅")} *Accepted* by ${escapeMarkdownV2(actor)}`
+            : `${escapeMarkdownV2("❌")} *Rejected* by ${escapeMarkdownV2(actor)}`,
+          { parseMode: "MarkdownV2" },
+        );
+      }
+    } catch (err) {
+      await answerCallbackQuery(ctx, token, query.id, `Failed: ${String(err)}`);
+    }
+    return;
+  }
 
   if (data.startsWith("approve_")) {
     const approvalId = data.replace("approve_", "");
