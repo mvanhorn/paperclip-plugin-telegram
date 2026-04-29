@@ -37,6 +37,7 @@ import {
 } from "./acp-bridge.js";
 import { handleMediaMessage } from "./media-pipeline.js";
 import { getPersistedTelegramUpdateOffset, persistTelegramUpdateOffset } from "./polling-offset.js";
+import { classifyUpdate, STALE_UPDATE_GRACE_SECONDS } from "./update-filter.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { METRIC_NAMES } from "./constants.js";
@@ -85,6 +86,7 @@ type TelegramUpdate = {
   update_id: number;
   message?: {
     message_id: number;
+    date?: number;
     from?: { id: number; username?: string; first_name?: string };
     chat: { id: number; type: string; title?: string };
     text?: string;
@@ -108,6 +110,7 @@ type TelegramUpdate = {
     from: { id: number; username?: string; first_name?: string };
     message?: {
       message_id: number;
+      date?: number;
       chat: { id: number };
       text?: string;
     };
@@ -203,6 +206,7 @@ const plugin = definePlugin({
 
     // --- Long polling for inbound messages ---
     let pollingActive = true;
+    const pollingStartedAtSeconds = Math.floor(Date.now() / 1000);
     let lastUpdateId = await getPersistedTelegramUpdateOffset(ctx);
 
     async function pollUpdates(): Promise<void> {
@@ -219,6 +223,34 @@ const plugin = definePlugin({
 
           if (data.ok && data.result) {
             for (const update of data.result) {
+              const decision = classifyUpdate(update, lastUpdateId, pollingStartedAtSeconds);
+              if (decision.action === "skip" && decision.reason === "duplicate") {
+                continue;
+              }
+
+              // Persist offset before handling. If handling sends a Telegram reply and then
+              // crashes before the offset write, the same update is replayed on restart and
+              // can flood the chat. At-most-once command handling is safer than replay.
+              lastUpdateId = update.update_id;
+              try {
+                await persistTelegramUpdateOffset(ctx, lastUpdateId);
+              } catch (err) {
+                ctx.logger.error("Failed to persist Telegram polling offset before handling", {
+                  updateId: lastUpdateId,
+                  error: String(err),
+                });
+                continue;
+              }
+
+              if (decision.action === "skip" && decision.reason === "stale") {
+                ctx.logger.info("Skipping stale Telegram update", {
+                  updateId: update.update_id,
+                  pollingStartedAtSeconds,
+                  graceSeconds: STALE_UPDATE_GRACE_SECONDS,
+                });
+                continue;
+              }
+
               try {
                 await handleUpdate(ctx, token, config, update, baseUrl, publicUrl);
               } catch (err) {
@@ -226,19 +258,6 @@ const plugin = definePlugin({
                   updateId: update.update_id,
                   error: String(err),
                 });
-              }
-
-              const nextUpdateId = Math.max(lastUpdateId, update.update_id);
-              if (nextUpdateId > lastUpdateId) {
-                lastUpdateId = nextUpdateId;
-                try {
-                  await persistTelegramUpdateOffset(ctx, lastUpdateId);
-                } catch (err) {
-                  ctx.logger.error("Failed to persist Telegram polling offset", {
-                    updateId: lastUpdateId,
-                    error: String(err),
-                  });
-                }
               }
             }
           }
@@ -264,6 +283,18 @@ const plugin = definePlugin({
 
     // --- Event subscriptions ---
 
+    // Local policy (2026-04-29): drop replayed/stale host events on plugin startup.
+    // The Paperclip host may deliver queued historical events when a plugin is re-enabled
+    // after downtime. Without this guard, a repair/restart can replay hundreds of old
+    // issue.created/issue.updated events as fresh Telegram notifications.
+    const pluginStartedAtMs = Date.now();
+    const replayGraceMs = 30_000;
+    function isFreshEvent(event: PluginEvent): boolean {
+      const occurredAtMs = Date.parse(String(event.occurredAt ?? ""));
+      if (!Number.isFinite(occurredAtMs)) return true;
+      return occurredAtMs >= pluginStartedAtMs - replayGraceMs;
+    }
+
     const issuePrefixCache = new Map<string, string>();
 
     async function resolveIssueLinksOpts(companyId: string): Promise<IssueLinksOpts> {
@@ -281,6 +312,14 @@ const plugin = definePlugin({
       formatter: (e: PluginEvent, opts?: IssueLinksOpts) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
       overrideChatId?: string,
     ) => {
+      if (!isFreshEvent(event)) {
+        ctx.logger.info("Skipping stale Telegram notification event", {
+          eventType: event.eventType,
+          eventId: event.eventId,
+          occurredAt: event.occurredAt,
+        });
+        return;
+      }
       const chatId = await resolveChat(
         ctx,
         event.companyId,
@@ -794,39 +833,10 @@ const plugin = definePlugin({
       return handleDiscussToolCall(ctx, token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
     });
 
-    // --- Phase 5: Register register_watch tool ---
-    ctx.tools.register("register_watch", {
-      displayName: "Register Watch",
-      description: "Register a proactive watch that monitors entities and sends suggestions",
-      parametersSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Name of the watch" },
-          description: { type: "string", description: "What this watch monitors" },
-          entityType: { type: "string", enum: ["issue", "agent", "company", "custom"], description: "Type of entity to watch" },
-          conditions: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                field: { type: "string" },
-                operator: { type: "string", enum: ["gt", "lt", "eq", "ne", "contains", "exists"] },
-                value: {},
-              },
-              required: ["field", "operator", "value"],
-            },
-            description: "Conditions that trigger the watch",
-          },
-          template: { type: "string", description: "Message template with {{field}} placeholders" },
-          builtinTemplate: { type: "string", enum: ["invoice-overdue", "lead-stale"], description: "Use a built-in template instead" },
-          chatId: { type: "string", description: "Telegram chat ID for suggestions" },
-          threadId: { type: "number", description: "Telegram thread ID for suggestions" },
-        },
-        required: ["chatId"],
-      },
-    }, async (params: unknown, runCtx) => {
-      return handleRegisterWatch(ctx, params as Record<string, unknown>, runCtx.companyId);
-    });
+    // Local policy (2026-04-29): proactive watches are disabled on this instance.
+    // The watch scheduler can emit suggestions independently of issue state and caused
+    // a notification storm during plugin recovery. Re-enable only after a bounded,
+    // reviewed design exists.
 
     // --- Phase 1: Escalation timeout checker job ---
     ctx.jobs.register("check-escalation-timeouts", async () => {
@@ -837,17 +847,8 @@ const plugin = definePlugin({
       }
     });
 
-    // --- Phase 5: Watch checker job ---
-    ctx.jobs.register("check-watches", async () => {
-      try {
-        await checkWatches(ctx, token, {
-          maxSuggestionsPerHourPerCompany: config.maxSuggestionsPerHourPerCompany ?? 10,
-          watchDeduplicationWindowMs: config.watchDeduplicationWindowMs ?? 86400000,
-        });
-      } catch (err) {
-        ctx.logger.error("Watch check failed", { error: String(err) });
-      }
-    });
+    // --- Phase 5: Watch checker job disabled locally (2026-04-29). ---
+    // Proactive watches are disabled until they have explicit bounded config and tests.
 
     ctx.logger.info("Telegram bot plugin started (Chat OS v2 - all 5 phases)");
   },

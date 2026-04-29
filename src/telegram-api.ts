@@ -2,6 +2,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { METRIC_NAMES } from "./constants.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
+const SEND_LIMIT_STATE_KEY = "telegram-send-limiter";
+const SEND_LIMIT_WINDOW_MS = 60_000;
+const SEND_LIMIT_MAX_PER_WINDOW = 5;
 
 type InlineButton = {
   text: string;
@@ -26,6 +29,27 @@ export async function sendMessage(
   text: string,
   options: SendMessageOptions = {},
 ): Promise<number | null> {
+  const now = Date.now();
+  const limiter = (await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: SEND_LIMIT_STATE_KEY,
+  })) as { windowStartedAt: number; count: number } | null;
+  const current = limiter && now - limiter.windowStartedAt < SEND_LIMIT_WINDOW_MS
+    ? limiter
+    : { windowStartedAt: now, count: 0 };
+  if (current.count >= SEND_LIMIT_MAX_PER_WINDOW) {
+    ctx.logger.error("Telegram send hard-limited", {
+      chatId,
+      windowStartedAt: current.windowStartedAt,
+      count: current.count,
+      limit: SEND_LIMIT_MAX_PER_WINDOW,
+    });
+    await ctx.metrics.write(METRIC_NAMES.failed, 1);
+    return null;
+  }
+  current.count += 1;
+  await ctx.state.set({ scopeKind: "instance", stateKey: SEND_LIMIT_STATE_KEY }, current);
+
   const body: Record<string, unknown> = {
     chat_id: chatId,
     text,

@@ -281,12 +281,8 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Check for timed-out escalations and apply default actions.",
       schedule: "* * * * *",
     },
-    {
-      jobKey: "check-watches",
-      displayName: "Check Proactive Watches",
-      description: "Evaluate registered watches and send suggestions when conditions are met.",
-      schedule: "*/15 * * * *",
-    },
+    // Local policy (2026-04-29): proactive watches disabled after Telegram flood.
+    // Do not declare check-watches until it has bounded config and replay-safe tests.
   ],
   tools: [
     {
@@ -307,12 +303,7 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Start a back-and-forth conversation with another agent",
       parametersSchema: { type: "object" },
     },
-    {
-      name: "register_watch",
-      displayName: "Register Watch",
-      description: "Register a proactive watch that monitors entities and sends suggestions",
-      parametersSchema: { type: "object" },
-    },
+    // Local policy (2026-04-29): register_watch disabled with watch scheduler.
   ],
 };
 
