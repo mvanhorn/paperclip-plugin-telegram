@@ -91,6 +91,33 @@ describe("formatIssueDone", () => {
     expect(msg.text).toContain("Board prep package completed for Q3");
   });
 
+  it("turns delegated completion comments into concise result summaries", () => {
+    const msg = formatIssueDone(mockEvent({
+      comment: [
+        "Completed the controlled model eval and posted the comparison table/recommendation.",
+        "",
+        "Result: recommend Codex GPT-5.5 as Richie default; keep Sonnet as fallback for synthesis/editorial review.",
+        "Next action/owner: CHO-771 already reflects this recommendation, so no further mutation was needed there.",
+        "",
+        "Compound? memory/doc — already captured.",
+      ].join("\n"),
+    }));
+    expect(msg.text).toContain("Completed the controlled model eval");
+    expect(msg.text).toContain("Result: recommend Codex GPT\\-5\\.5 as Richie default");
+    expect(msg.text).toContain("Next action/owner: CHO\\-771 already reflects");
+    expect(msg.text).not.toContain("Compound");
+  });
+
+  it("formats in_review transitions as review-ready summaries", () => {
+    const msg = formatIssueDone(mockEvent({
+      status: "in_review",
+      comment: "Recommendation: approve the patch after operator restart.",
+    }));
+    expect(msg.text).toContain("Ready for Review");
+    expect(msg.text).toContain("is in review");
+    expect(msg.text).toContain("Recommendation: approve the patch");
+  });
+
   it("truncates long comments", () => {
     const longComment = Array(80).fill("word").join(" ");
     const msg = formatIssueDone(mockEvent({ comment: longComment }));

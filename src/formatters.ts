@@ -23,6 +23,8 @@ function code(s: string): string {
 
 export type IssueLinksOpts = { baseUrl?: string; issuePrefix?: string };
 
+const RESULT_LINE_RE = /\b(result|recommendation|decision|next action|next|owner|approval|completed|in review|blocked)\b/i;
+
 function isExternalUrl(url?: string): boolean {
   return !!url && url.startsWith("https://");
 }
@@ -47,6 +49,34 @@ function agentButton(agentId: string, label: string, publicUrl?: string): { text
     return { text: label, url: `${publicUrl}/agents/${agentId}` };
   }
   return null;
+}
+
+function cleanSummaryLine(line: string): string {
+  return line
+    .trim()
+    .replace(/^[-*]\s+/, "")
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
+export function buildDelegatedWorkSummary(comment: string, maxLen = 650): string {
+  const lines = comment
+    .split(/\r?\n/)
+    .map(cleanSummaryLine)
+    .filter((line) => line && !/^compound\?/i.test(line));
+  if (lines.length === 0) return "";
+
+  const picked: string[] = [];
+  for (const line of lines) {
+    if (RESULT_LINE_RE.test(line)) picked.push(line);
+    if (picked.length >= 4) break;
+  }
+  if (picked.length === 0) picked.push(lines[0]!);
+
+  const rendered = picked.map((line) => `• ${line}`).join("\n");
+  return truncateAtWord(rendered, maxLen);
 }
 
 export function formatIssueCreated(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
@@ -123,15 +153,21 @@ export function formatIssueDone(event: PluginEvent, opts?: IssueLinksOpts): Form
   const identifier = String(p.identifier ?? event.entityId);
   const title = String(p.title ?? "");
   const comment = p.comment ? String(p.comment) : null;
+  const status = String(p.status ?? "done");
+  const completionSummary = p.completionSummary ? String(p.completionSummary) : null;
+  const isReview = status === "in_review";
 
   const lines: string[] = [
-    `${esc("✅")} ${bold("Issue Completed")}: ${issueLink(identifier, opts)}`,
-    `${bold(title)} ${esc("is now done.")}`,
+    `${esc(isReview ? "👀" : "✅")} ${bold(isReview ? "Ready for Review" : "Issue Completed")}: ${issueLink(identifier, opts)}`,
+    `${bold(title)} ${esc(isReview ? "is in review." : "is now done.")}`,
   ];
 
-  if (comment) {
-    const truncated = truncateAtWord(comment, 300);
-    lines.push(`\n${esc(">")} ${esc(truncated)}`);
+  if (completionSummary) {
+    lines.push(`\n${bold("Summary")}`);
+    lines.push(esc(completionSummary));
+  } else if (comment) {
+    const summary = buildDelegatedWorkSummary(comment, 300);
+    lines.push(`\n${esc(">")} ${esc(summary || truncateAtWord(comment, 300))}`);
   }
 
   const button = issueButton(identifier, opts);

@@ -361,19 +361,28 @@ const plugin = definePlugin({
     }
 
     if (config.notifyOnIssueDone) {
-      const doneDedupe = makeUpdateDedupe();
+      const resultDedupe = makeUpdateDedupe();
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
         const payload = event.payload as Record<string, unknown>;
-        if (payload.status !== "done") return;
-        if (!doneDedupe(`done|${event.entityId}`)) return;
-        // Enrich with title if missing (issue.updated events often omit it)
-        if (!payload.title && event.entityId) {
+        const status = String(payload.status ?? "");
+        if (status !== "done" && status !== "in_review") return;
+        if (!resultDedupe(`${status}|${event.entityId}`)) return;
+        // Enrich with issue fields if missing (issue.updated events often omit them).
+        if ((!payload.title || !payload.identifier) && event.entityId) {
           try {
             const issue = await ctx.issues.get(event.entityId, event.companyId);
-            if (issue) payload.title = issue.title;
+            if (issue) {
+              payload.title = issue.title;
+              payload.identifier ??= issue.identifier;
+              payload.priority ??= issue.priority;
+              payload.assigneeAgentId ??= issue.assigneeAgentId;
+              payload.assigneeUserId ??= issue.assigneeUserId;
+            }
           } catch { /* best effort */ }
         }
-        // Enrich with latest comment (completion summary)
+        // Enrich with latest comment. This is the delegated-work completion bridge:
+        // the raw terminal status event gets paired with the agent's closing/review
+        // comment so Michael sees the result/recommendation, not just lifecycle noise.
         if (!payload.comment && event.entityId) {
           try {
             const comments = await ctx.issues.listComments(event.entityId, event.companyId);
@@ -489,12 +498,17 @@ const plugin = definePlugin({
       });
     }
 
-    ctx.events.on("agent.run.started", (event: PluginEvent) =>
-      notify(event, formatAgentRunStarted),
-    );
-    ctx.events.on("agent.run.finished", (event: PluginEvent) =>
-      notify(event, formatAgentRunFinished),
-    );
+    // Local policy (CHO-772): do not emit routine run lifecycle pings to Telegram.
+    // Paperclip issue updates/comments/reassignments can legitimately spawn repeated
+    // short adapter runs for the same issue; notifying each `agent.run.started` made
+    // handoffs look like notification loops. Keep issue/approval/error notifications,
+    // which carry the actual user-facing state change.
+    // ctx.events.on("agent.run.started", (event: PluginEvent) =>
+    //   notify(event, formatAgentRunStarted),
+    // );
+    // ctx.events.on("agent.run.finished", (event: PluginEvent) =>
+    //   notify(event, formatAgentRunFinished),
+    // );
 
     // --- Per-company chat overrides ---
 
