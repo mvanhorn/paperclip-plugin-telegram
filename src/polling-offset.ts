@@ -34,3 +34,68 @@ export async function persistTelegramUpdateOffset(
     updateId,
   );
 }
+
+type PollingLogger = Pick<PluginContext["logger"], "error">;
+
+export async function handleTelegramUpdateThenPersistOffset(options: {
+  updateId: number;
+  lastUpdateId: number;
+  handleUpdate: () => Promise<void>;
+  persistOffset: (updateId: number) => Promise<void>;
+  logger: PollingLogger;
+}): Promise<number> {
+  const { updateId, lastUpdateId, handleUpdate, persistOffset, logger } = options;
+
+  try {
+    await handleUpdate();
+  } catch (err) {
+    logger.error("Telegram update handling failed", {
+      updateId,
+      error: String(err),
+    });
+    return lastUpdateId;
+  }
+
+  const nextUpdateId = Math.max(lastUpdateId, updateId);
+  if (nextUpdateId <= lastUpdateId) return lastUpdateId;
+
+  try {
+    await persistOffset(nextUpdateId);
+  } catch (err) {
+    logger.error("Failed to persist Telegram polling offset", {
+      updateId: nextUpdateId,
+      error: String(err),
+    });
+  }
+
+  return nextUpdateId;
+}
+
+export async function processTelegramUpdateBatch<TUpdate extends { update_id: number }>(options: {
+  updates: TUpdate[];
+  lastUpdateId: number;
+  handleUpdate: (update: TUpdate) => Promise<void>;
+  persistOffset: (updateId: number) => Promise<void>;
+  logger: PollingLogger;
+}): Promise<number> {
+  const { updates, handleUpdate, persistOffset, logger } = options;
+  let lastUpdateId = options.lastUpdateId;
+
+  for (const update of updates) {
+    const nextUpdateId = await handleTelegramUpdateThenPersistOffset({
+      updateId: update.update_id,
+      lastUpdateId,
+      handleUpdate: () => handleUpdate(update),
+      persistOffset,
+      logger,
+    });
+
+    if (nextUpdateId === lastUpdateId && update.update_id > lastUpdateId) {
+      break;
+    }
+
+    lastUpdateId = nextUpdateId;
+  }
+
+  return lastUpdateId;
+}

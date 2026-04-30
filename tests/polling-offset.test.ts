@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   getPersistedTelegramUpdateOffset,
+  handleTelegramUpdateThenPersistOffset,
   persistTelegramUpdateOffset,
+  processTelegramUpdateBatch,
   TELEGRAM_LAST_UPDATE_ID_STATE_KEY,
 } from "../src/polling-offset.js";
 
@@ -50,5 +52,97 @@ describe("Telegram polling offset persistence", () => {
     await persistTelegramUpdateOffset(ctx, -1);
     await persistTelegramUpdateOffset(ctx, Number.NaN);
     expect(ctx.state.set).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleTelegramUpdateThenPersistOffset", () => {
+  it("persists the update offset only after handling succeeds", async () => {
+    const calls: string[] = [];
+    const logger = { error: vi.fn() };
+
+    const nextOffset = await handleTelegramUpdateThenPersistOffset({
+      updateId: 42,
+      lastUpdateId: 41,
+      handleUpdate: vi.fn(async () => {
+        calls.push("handle");
+      }),
+      persistOffset: vi.fn(async (updateId) => {
+        calls.push(`persist:${updateId}`);
+      }),
+      logger,
+    });
+
+    expect(nextOffset).toBe(42);
+    expect(calls).toEqual(["handle", "persist:42"]);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("does not advance or persist the offset when handling fails", async () => {
+    const persistOffset = vi.fn(async () => undefined);
+    const logger = { error: vi.fn() };
+
+    const nextOffset = await handleTelegramUpdateThenPersistOffset({
+      updateId: 42,
+      lastUpdateId: 41,
+      handleUpdate: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+      persistOffset,
+      logger,
+    });
+
+    expect(nextOffset).toBe(41);
+    expect(persistOffset).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith("Telegram update handling failed", {
+      updateId: 42,
+      error: "Error: boom",
+    });
+  });
+});
+
+describe("processTelegramUpdateBatch", () => {
+  it("stops after a failed update so later updates cannot advance past it", async () => {
+    const handledUpdateIds: number[] = [];
+    const persistOffset = vi.fn(async () => undefined);
+    const logger = { error: vi.fn() };
+
+    const nextOffset = await processTelegramUpdateBatch({
+      updates: [{ update_id: 42 }, { update_id: 43 }],
+      lastUpdateId: 41,
+      handleUpdate: vi.fn(async (update) => {
+        handledUpdateIds.push(update.update_id);
+        if (update.update_id === 42) {
+          throw new Error("boom");
+        }
+      }),
+      persistOffset,
+      logger,
+    });
+
+    expect(nextOffset).toBe(41);
+    expect(handledUpdateIds).toEqual([42]);
+    expect(persistOffset).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith("Telegram update handling failed", {
+      updateId: 42,
+      error: "Error: boom",
+    });
+  });
+
+  it("persists each contiguous successfully handled update", async () => {
+    const persistOffset = vi.fn(async () => undefined);
+    const logger = { error: vi.fn() };
+
+    const nextOffset = await processTelegramUpdateBatch({
+      updates: [{ update_id: 42 }, { update_id: 43 }],
+      lastUpdateId: 41,
+      handleUpdate: vi.fn(async () => undefined),
+      persistOffset,
+      logger,
+    });
+
+    expect(nextOffset).toBe(43);
+    expect(persistOffset).toHaveBeenNthCalledWith(1, 42);
+    expect(persistOffset).toHaveBeenNthCalledWith(2, 43);
+    expect(logger.error).not.toHaveBeenCalled();
   });
 });
