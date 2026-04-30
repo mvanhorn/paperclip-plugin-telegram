@@ -49,6 +49,19 @@ function agentButton(agentId: string, label: string, publicUrl?: string): { text
   return null;
 }
 
+function runButton(agentId: string, runId: string | null, publicUrl?: string): { text: string; url: string } | null {
+  if (publicUrl && isExternalUrl(publicUrl) && runId) {
+    return { text: "View Run ↗", url: `${publicUrl}/agents/${agentId}/runs/${runId}` };
+  }
+  return null;
+}
+
+function classifyAgentError(errorMessage: string): string {
+  if (/timed?\s*out|timeout/i.test(errorMessage)) return "Agent Timeout";
+  if (/limit|rate.?limit|quota/i.test(errorMessage)) return "Agent Rate Limit";
+  return "Agent Error";
+}
+
 export function formatIssueCreated(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const identifier = String(p.identifier ?? event.entityId);
@@ -206,17 +219,35 @@ export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): For
   const agentId = String(p.agentId ?? event.entityId);
   const agentName = String(p.agentName ?? p.name ?? agentId);
   const errorMessage = String(p.error ?? p.message ?? "Unknown error");
+  const runId = p.runId ? String(p.runId) : null;
+  const companyName = p.companyName ? String(p.companyName) : null;
+  const issueIdentifier = p.issueIdentifier ? String(p.issueIdentifier) : null;
+  const issueTitle = p.issueTitle ? String(p.issueTitle) : null;
 
-  const btn = agentButton(agentId, "View Agent ↗", opts?.baseUrl);
+  const lines: string[] = [
+    `${esc("❌")} ${bold(classifyAgentError(errorMessage))}`,
+    `Agent: ${bold(agentName)}`,
+  ];
+  if (companyName) lines.push(`Company: ${esc(companyName)}`);
+  if (issueIdentifier) {
+    lines.push(
+      issueTitle
+        ? `Issue: ${issueLink(issueIdentifier, opts)} ${esc("—")} ${esc(issueTitle)}`
+        : `Issue: ${issueLink(issueIdentifier, opts)}`,
+    );
+  }
+  lines.push(`\n${code(truncateAtWord(errorMessage, 500))}`);
+
+  const buttons = [
+    runButton(agentId, runId, opts?.baseUrl),
+    issueIdentifier ? issueButton(issueIdentifier, opts) : null,
+    agentButton(agentId, "View Agent ↗", opts?.baseUrl),
+  ].filter((button): button is { text: string; url: string } => Boolean(button));
   return {
-    text: [
-      `${esc("❌")} ${bold("Agent Error")}`,
-      `${bold(agentName)} ${esc("encountered an error")}`,
-      `\n${code(truncateAtWord(errorMessage, 500))}`,
-    ].join("\n"),
+    text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
-      ...(btn ? { inlineKeyboard: [[btn]] } : {}),
+      ...(buttons.length > 0 ? { inlineKeyboard: [buttons] } : {}),
     },
   };
 }
