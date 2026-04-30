@@ -582,6 +582,13 @@ const plugin = definePlugin({
 
     if (config.notifyOnAgentError) {
       ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        if (payload.agentId && !payload.agentName) {
+          try {
+            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+            if (agent) payload.agentName = agent.name;
+          } catch { /* best effort */ }
+        }
         await notify(event, formatAgentError, config.errorsChatId);
         try {
           await createIgorRecoveryIssueForRunFailure(ctx, event, baseUrl);

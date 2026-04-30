@@ -297,13 +297,16 @@ export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): For
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);
   const agentName = String(p.agentName ?? p.name ?? agentId);
+  const agentLine = agentName === agentId
+    ? bold(agentId)
+    : `${bold(agentName)} ${esc("(")}${code(agentId)}${esc(")")}`;
   const errorMessage = String(p.error ?? p.message ?? "Unknown error");
 
   const btn = agentButton(agentId, "View Agent ↗", opts?.baseUrl);
   return {
     text: [
       `${esc("❌")} ${bold("Agent Error")}`,
-      `${bold(agentName)} ${esc("encountered an error")}`,
+      `${agentLine} ${esc("encountered an error")}`,
       `\n${code(truncateAtWord(errorMessage, 500))}`,
     ].join("\n"),
     options: {

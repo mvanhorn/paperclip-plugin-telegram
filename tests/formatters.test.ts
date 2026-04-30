@@ -287,10 +287,12 @@ describe("formatIssueRequestConfirmation", () => {
 describe("formatAgentError", () => {
   it("includes agent name and error", () => {
     const msg = formatAgentError(mockEvent({
+      agentId: "agent-123",
       agentName: "Builder",
       error: "Connection refused",
     }));
     expect(msg.text).toContain("Builder");
+    expect(msg.text).toContain("agent\\-123");
     expect(msg.text).toContain("Connection refused");
   });
 
