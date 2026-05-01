@@ -36,7 +36,11 @@ import {
   setupAcpOutputListener,
 } from "./acp-bridge.js";
 import { handleMediaMessage } from "./media-pipeline.js";
-import { getPersistedTelegramUpdateOffset, persistTelegramUpdateOffset } from "./polling-offset.js";
+import {
+  getPersistedTelegramUpdateOffset,
+  persistTelegramUpdateOffset,
+  processTelegramUpdateBatch,
+} from "./polling-offset.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { METRIC_NAMES } from "./constants.js";
@@ -389,29 +393,13 @@ const plugin = definePlugin({
           };
 
           if (data.ok && data.result) {
-            for (const update of data.result) {
-              try {
-                await handleUpdate(ctx, token, config, update, baseUrl, publicUrl);
-              } catch (err) {
-                ctx.logger.error("Telegram update handling failed", {
-                  updateId: update.update_id,
-                  error: String(err),
-                });
-              }
-
-              const nextUpdateId = Math.max(lastUpdateId, update.update_id);
-              if (nextUpdateId > lastUpdateId) {
-                lastUpdateId = nextUpdateId;
-                try {
-                  await persistTelegramUpdateOffset(ctx, lastUpdateId);
-                } catch (err) {
-                  ctx.logger.error("Failed to persist Telegram polling offset", {
-                    updateId: lastUpdateId,
-                    error: String(err),
-                  });
-                }
-              }
-            }
+            lastUpdateId = await processTelegramUpdateBatch({
+              updates: data.result,
+              lastUpdateId,
+              handleUpdate: (update) => handleUpdate(ctx, token, config, update, baseUrl, publicUrl),
+              persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
+              logger: ctx.logger,
+            });
           }
         } catch (err) {
           ctx.logger.error("Telegram polling error", { error: String(err) });
