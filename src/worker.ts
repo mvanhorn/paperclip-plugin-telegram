@@ -74,6 +74,7 @@ type TelegramConfig = {
   bidailySecondTime: string;
   tridailyTimes: string;
   topicRouting: boolean;
+  maxAgentsPerThread: number;
   escalationChatId: string;
   escalationTimeoutMs: number;
   escalationDefaultAction: "defer" | "auto_reply" | "close";
@@ -1105,7 +1106,7 @@ async function handleUpdate(
 
     // Built-in commands
     const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, config, companyId) : undefined;
-    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken);
+    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken, config.maxAgentsPerThread);
     return;
   }
 

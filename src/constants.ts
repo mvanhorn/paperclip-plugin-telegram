@@ -1,5 +1,6 @@
 export const PLUGIN_ID = "paperclip-plugin-telegram";
 export const PLUGIN_VERSION = "0.3.0";
+export const MAX_AGENTS_PER_THREAD = 5;
 
 export const DEFAULT_CONFIG = {
   telegramBotTokenRef: "",
@@ -29,6 +30,7 @@ export const DEFAULT_CONFIG = {
   bidailySecondTime: "17:00",
   tridailyTimes: "07:00,13:00,19:00",
   topicRouting: false,
+  maxAgentsPerThread: MAX_AGENTS_PER_THREAD,
   escalationChatId: "",
   escalationTimeoutMs: 900000,
   escalationDefaultAction: "defer",
@@ -42,7 +44,6 @@ export const DEFAULT_CONFIG = {
   watchDeduplicationWindowMs: 86400000, // 24h
 } as const;
 
-export const MAX_AGENTS_PER_THREAD = 5;
 export const MAX_CONVERSATION_TURNS = 50;
 export const DEFAULT_CONVERSATION_TURNS = 10;
 

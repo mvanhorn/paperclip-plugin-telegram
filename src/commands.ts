@@ -43,6 +43,7 @@ export async function handleCommand(
   publicUrl?: string,
   companyId?: string,
   boardApiToken?: string,
+  maxAgentsPerThread?: number,
 ): Promise<void> {
   await ctx.metrics.write(METRIC_NAMES.commandsHandled, 1);
 
@@ -75,7 +76,7 @@ export async function handleCommand(
       await handleTopicsCommand(ctx, token, chatId, args, messageThreadId);
       break;
     case "acp":
-      await handleAcpCommand(ctx, token, chatId, args, messageThreadId);
+      await handleAcpCommand(ctx, token, chatId, args, messageThreadId, companyId, maxAgentsPerThread);
       break;
     default:
       await sendMessage(ctx, token, chatId, `Unknown command: /${command}. Try /help`, {
