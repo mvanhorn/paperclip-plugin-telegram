@@ -653,6 +653,27 @@ const plugin = definePlugin({
       ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
         const payload = event.payload as Record<string, unknown>;
         const agentId = String(payload.agentId ?? event.entityId);
+        if (payload.agentId && !payload.agentName) {
+          try {
+            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+            if (agent) payload.agentName = agent.name;
+          } catch { /* best effort */ }
+        }
+        if (!payload.companyName) {
+          try {
+            const company = await ctx.companies.get(event.companyId);
+            if (company?.name) payload.companyName = company.name;
+          } catch { /* best effort */ }
+        }
+        if (payload.issueId && (!payload.issueIdentifier || !payload.issueTitle)) {
+          try {
+            const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
+            if (issue) {
+              payload.issueIdentifier ??= issue.identifier;
+              payload.issueTitle ??= issue.title;
+            }
+          } catch { /* best effort */ }
+        }
         const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
         const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
         if (!agentErrorDedupe(dedupeKey)) return;
