@@ -43,7 +43,7 @@ import {
 } from "./polling-offset.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
-import { METRIC_NAMES } from "./constants.js";
+import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
@@ -69,6 +69,8 @@ type TelegramConfig = {
   notifyOnApprovalCreated: boolean;
   onlyNotifyBoardApprovals: boolean;
   notifyOnAgentError: boolean;
+  notifyOnAgentRunStarted: boolean;
+  notifyOnAgentRunFinished: boolean;
   enableCommands: boolean;
   enableInbound: boolean;
   allowedTelegramUserIds: string[];
@@ -268,6 +270,13 @@ function makeUpdateDedupe(windowMs = 5_000, maxEntries = 500) {
     }
     return true;
   };
+}
+
+function normalizeAgentErrorMessage(input: unknown): string {
+  return String(input ?? "Unknown error")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 500);
 }
 
 async function resolveChat(
@@ -640,17 +649,60 @@ const plugin = definePlugin({
     }
 
     if (config.notifyOnAgentError) {
-      ctx.events.on("agent.run.failed", (event: PluginEvent) =>
-        notify(event, formatAgentError, config.errorsChatId, config.errorsTopicId),
-      );
+      const agentErrorDedupe = makeUpdateDedupe(AGENT_ERROR_DEDUPLICATION_WINDOW_MS, 1000);
+      ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        const agentId = String(payload.agentId ?? event.entityId);
+        if (payload.agentId && !payload.agentName) {
+          try {
+            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+            if (agent) payload.agentName = agent.name;
+          } catch { /* best effort */ }
+        }
+        if (!payload.companyName) {
+          try {
+            const company = await ctx.companies.get(event.companyId);
+            if (company?.name) payload.companyName = company.name;
+          } catch { /* best effort */ }
+        }
+        if (payload.issueId && (!payload.issueIdentifier || !payload.issueTitle)) {
+          try {
+            const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
+            if (issue) {
+              payload.issueIdentifier ??= issue.identifier;
+              payload.issueTitle ??= issue.title;
+            }
+          } catch { /* best effort */ }
+        }
+        const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
+        const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
+        if (!agentErrorDedupe(dedupeKey)) return;
+        await notify(event, formatAgentError, config.errorsChatId, config.errorsTopicId);
+      });
     }
 
-    ctx.events.on("agent.run.started", (event: PluginEvent) =>
-      notify(event, formatAgentRunStarted),
-    );
-    ctx.events.on("agent.run.finished", (event: PluginEvent) =>
-      notify(event, formatAgentRunFinished),
-    );
+    const enrichAgentName = async (event: PluginEvent) => {
+      const payload = event.payload as Record<string, unknown>;
+      if (payload.agentId && !payload.agentName) {
+        try {
+          const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+          if (agent) payload.agentName = agent.name;
+        } catch { /* best effort */ }
+      }
+    };
+
+    if (config.notifyOnAgentRunStarted) {
+      ctx.events.on("agent.run.started", async (event: PluginEvent) => {
+        await enrichAgentName(event);
+        await notify(event, formatAgentRunStarted);
+      });
+    }
+    if (config.notifyOnAgentRunFinished) {
+      ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
+        await enrichAgentName(event);
+        await notify(event, formatAgentRunFinished);
+      });
+    }
 
     // --- Per-company chat overrides ---
 

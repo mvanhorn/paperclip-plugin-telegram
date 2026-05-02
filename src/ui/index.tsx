@@ -63,6 +63,8 @@ type TelegramRoutingConfig = {
   errorsChatId: string;
   errorsTopicId: string;
   notifyOnAgentError: boolean;
+  notifyOnAgentRunStarted: boolean;
+  notifyOnAgentRunFinished: boolean;
   digestChatId: string;
   digestTopicId: string;
   digestMode: "off" | "daily" | "bidaily" | "tridaily";
@@ -127,6 +129,8 @@ const DEFAULT_ROUTING_CONFIG: TelegramRoutingConfig = {
   errorsChatId: "",
   errorsTopicId: "",
   notifyOnAgentError: true,
+  notifyOnAgentRunStarted: false,
+  notifyOnAgentRunFinished: false,
   digestChatId: "",
   digestTopicId: "",
   digestMode: "off",
@@ -260,6 +264,14 @@ function extractRoutingConfig(config: Record<string, unknown>): TelegramRoutingC
     notifyOnAgentError: asBoolean(
       config.notifyOnAgentError,
       DEFAULT_ROUTING_CONFIG.notifyOnAgentError,
+    ),
+    notifyOnAgentRunStarted: asBoolean(
+      config.notifyOnAgentRunStarted,
+      DEFAULT_ROUTING_CONFIG.notifyOnAgentRunStarted,
+    ),
+    notifyOnAgentRunFinished: asBoolean(
+      config.notifyOnAgentRunFinished,
+      DEFAULT_ROUTING_CONFIG.notifyOnAgentRunFinished,
     ),
     digestChatId: asString(config.digestChatId),
     digestTopicId: asString(config.digestTopicId),
@@ -1742,20 +1754,50 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             onTopicIdChange={(value) => updateRoutingField("errorsTopicId", value)}
             chatHelp="Leave empty to use the default route for agent error notifications."
             footer={
-              <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
-                <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
-                  <input
-                    checked={routingConfig.notifyOnAgentError}
-                    disabled={routingLoading || routingSaving}
-                    onChange={(event) => updateRoutingField("notifyOnAgentError", event.currentTarget.checked)}
-                    type="checkbox"
-                  />
-                  Enabled
-                </span>
-                <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
-                  Send Telegram notifications when an agent run reports an error.
-                </span>
-              </label>
+              <>
+                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                  <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
+                    <input
+                      checked={routingConfig.notifyOnAgentError}
+                      disabled={routingLoading || routingSaving}
+                      onChange={(event) => updateRoutingField("notifyOnAgentError", event.currentTarget.checked)}
+                      type="checkbox"
+                    />
+                    Errors enabled
+                  </span>
+                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                    Send Telegram notifications when an agent run reports an error.
+                  </span>
+                </label>
+                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                  <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
+                    <input
+                      checked={routingConfig.notifyOnAgentRunStarted}
+                      disabled={routingLoading || routingSaving}
+                      onChange={(event) => updateRoutingField("notifyOnAgentRunStarted", event.currentTarget.checked)}
+                      type="checkbox"
+                    />
+                    Run started
+                  </span>
+                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                    Notify on every agent run start. Off by default - high-frequency on busy instances. Routes through the default chat.
+                  </span>
+                </label>
+                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                  <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
+                    <input
+                      checked={routingConfig.notifyOnAgentRunFinished}
+                      disabled={routingLoading || routingSaving}
+                      onChange={(event) => updateRoutingField("notifyOnAgentRunFinished", event.currentTarget.checked)}
+                      type="checkbox"
+                    />
+                    Run finished
+                  </span>
+                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                    Notify on every agent run completion. Off by default - high-frequency on busy instances. Routes through the default chat.
+                  </span>
+                </label>
+              </>
             }
           />
 
