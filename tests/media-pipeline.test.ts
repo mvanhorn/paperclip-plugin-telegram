@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleMediaMessage } from "../src/media-pipeline.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
@@ -74,6 +74,23 @@ beforeEach(() => {
   sentMessages = [];
   stateStore = {};
   emittedEvents = [];
+
+  vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("openai.com")) {
+      return new Response(JSON.stringify({ text: "Transcribed" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("api.telegram.org")) {
+      return new Response(new ArrayBuffer(8));
+    }
+    throw new Error(`Unmocked native fetch: ${u}`);
+  }));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("Intake detection", () => {
@@ -154,16 +171,6 @@ describe("Intake detection", () => {
 describe("Audio type detection", () => {
   it("detects voice messages as audio", async () => {
     const ctx = mockCtx();
-    // Mock the Whisper API response
-    (ctx.http.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (String(url).includes("openai.com")) {
-        return { json: () => Promise.resolve({ text: "Transcribed voice" }) };
-      }
-      if (String(url).includes("getFile")) {
-        return { json: () => Promise.resolve({ ok: true, result: { file_path: "voice/file.oga" } }) };
-      }
-      return { blob: () => Promise.resolve(new Blob(["data"])) };
-    });
 
     await handleMediaMessage(ctx, "token", {
       message_id: 1,
@@ -178,15 +185,6 @@ describe("Audio type detection", () => {
 
   it("detects audio messages as audio", async () => {
     const ctx = mockCtx();
-    (ctx.http.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (String(url).includes("openai.com")) {
-        return { json: () => Promise.resolve({ text: "Transcribed audio" }) };
-      }
-      if (String(url).includes("getFile")) {
-        return { json: () => Promise.resolve({ ok: true, result: { file_path: "audio/file.mp3" } }) };
-      }
-      return { blob: () => Promise.resolve(new Blob(["data"])) };
-    });
 
     await handleMediaMessage(ctx, "token", {
       message_id: 1,
@@ -200,15 +198,6 @@ describe("Audio type detection", () => {
 
   it("detects video_note as audio (transcribable)", async () => {
     const ctx = mockCtx();
-    (ctx.http.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (String(url).includes("openai.com")) {
-        return { json: () => Promise.resolve({ text: "Video note text" }) };
-      }
-      if (String(url).includes("getFile")) {
-        return { json: () => Promise.resolve({ ok: true, result: { file_path: "videonote/file.mp4" } }) };
-      }
-      return { blob: () => Promise.resolve(new Blob(["data"])) };
-    });
 
     await handleMediaMessage(ctx, "token", {
       message_id: 1,
