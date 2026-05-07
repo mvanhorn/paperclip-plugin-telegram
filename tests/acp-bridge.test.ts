@@ -44,6 +44,13 @@ function mockCtx(): PluginContext {
         close: vi.fn(),
       },
     },
+    issues: {
+      create: vi.fn().mockResolvedValue({ id: "issue-1" }),
+      update: vi.fn().mockResolvedValue({ id: "issue-1" }),
+    },
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+    },
   } as unknown as PluginContext;
 }
 
@@ -224,6 +231,36 @@ describe("routeMessageToAgent - reply-to fallback", () => {
     const ctx = mockCtx();
     const result = await routeMessageToAgent(ctx, "token", "chat-1", 42, "hello", undefined, "company-1");
     expect(result).toBe(false);
+  });
+
+  it("creates native wake-up issues in the project mapped to the Telegram topic", async () => {
+    const ctx = mockCtx();
+    stateStore["topic-map-chat-1"] = {
+      "Setup and Tests": {
+        projectId: "project-1",
+        projectName: "Setup and Tests",
+        topicId: "42",
+      },
+    };
+    stateStore["sessions_chat-1_42"] = [{
+      sessionId: "s1",
+      agentId: "agent-1",
+      agentName: "ceo",
+      agentDisplayName: "CEO",
+      transport: "native",
+      spawnedAt: "2026-01-01T00:00:00Z",
+      status: "active",
+      lastActivityAt: "2026-01-01T00:00:00Z",
+    }];
+
+    const result = await routeMessageToAgent(ctx, "token", "chat-1", 42, "hello from topic", undefined, "company-1");
+
+    expect(result).toBe(true);
+    expect(ctx.issues.create).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      projectId: "project-1",
+      assigneeAgentId: "agent-1",
+    }));
   });
 });
 

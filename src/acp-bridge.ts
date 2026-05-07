@@ -1,6 +1,7 @@
 import type { PluginContext, AgentSessionEvent } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { truncateAtWord } from "./telegram-api.js";
+import { resolveMappedProjectIdForTopic } from "./topic-projects.js";
 import {
   MAX_AGENTS_PER_THREAD,
   DEFAULT_CONVERSATION_TURNS,
@@ -186,6 +187,7 @@ export async function wakeAgentWithIssue(
   companyId: string,
   promptText: string,
   reason: string,
+  projectId?: string,
 ): Promise<string | null> {
   try {
     const title = truncateAtWord(promptText.replace(/\n/g, " "), 200);
@@ -193,6 +195,7 @@ export async function wakeAgentWithIssue(
 
     const issue = await ctx.issues.create({
       companyId,
+      ...(projectId ? { projectId } : {}),
       title: `[Telegram] ${title}`,
       description,
       assigneeAgentId: agentId,
@@ -212,6 +215,7 @@ export async function wakeAgentWithIssue(
     ctx.logger.error("Failed to create issue for native prompt delivery", {
       agentId,
       companyId,
+      projectId,
       reason,
       error: String(err),
     });
@@ -609,6 +613,7 @@ export async function routeMessageToAgent(
   await saveSessions(ctx, chatId, threadId, sessions);
 
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+  const projectId = await resolveMappedProjectIdForTopic(ctx, chatId, resolvedCompanyId, threadId);
 
   // Route via correct transport
   if (targetSession.transport === "native") {
@@ -618,6 +623,7 @@ export async function routeMessageToAgent(
       resolvedCompanyId,
       text,
       "telegram_message",
+      projectId,
     );
     if (!issueId) {
       ctx.logger.error("Failed to deliver message to native agent — issue creation failed", {

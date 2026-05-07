@@ -2,6 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import { getSessions, wakeAgentWithIssue } from "./acp-bridge.js";
+import { resolveMappedProjectIdForTopic } from "./topic-projects.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
 
@@ -130,6 +131,7 @@ export async function handleMediaMessage(
     if (target) {
       const mediaLabel = isAudio ? "Audio message" : msg.photo ? "Photo" : "Document";
       const prompt = `[${mediaLabel}] ${textContent || "(no caption)"}`;
+      const projectId = await resolveMappedProjectIdForTopic(ctx, chatId, companyId, threadId);
 
       if (target.transport === "native") {
         await wakeAgentWithIssue(
@@ -138,6 +140,7 @@ export async function handleMediaMessage(
           companyId,
           prompt,
           "media_message",
+          projectId,
         );
       } else {
         ctx.events.emit("acp-spawn", companyId, {

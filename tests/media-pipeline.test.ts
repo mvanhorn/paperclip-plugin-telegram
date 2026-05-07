@@ -58,6 +58,9 @@ function mockCtx(): PluginContext {
         sendMessage: vi.fn(),
       },
     },
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+    },
     secrets: {
       resolve: vi.fn().mockResolvedValue("sk-test-key"),
     },
@@ -290,6 +293,13 @@ describe("Media routing to agents in threads", () => {
   it("sends to native session when transport is native", async () => {
     const { wakeAgentWithIssue } = await import("../src/acp-bridge.js");
 
+    stateStore["topic-map-456"] = {
+      "Setup and Tests": {
+        projectId: "project-1",
+        projectName: "Setup and Tests",
+        topicId: "42",
+      },
+    };
     stateStore["sessions_456_42"] = [{
       sessionId: "s1",
       agentId: "a1",
@@ -309,7 +319,14 @@ describe("Media routing to agents in threads", () => {
       document: { file_id: "doc-1", file_name: "file.txt" },
     }, { ...defaultConfig, briefAgentChatIds: [] }, "company-1");
 
-    expect(wakeAgentWithIssue).toHaveBeenCalled();
+    expect(wakeAgentWithIssue).toHaveBeenCalledWith(
+      ctx,
+      "a1",
+      "company-1",
+      "[Document] (no caption)",
+      "media_message",
+      "project-1",
+    );
   });
 });
 
