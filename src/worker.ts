@@ -47,6 +47,7 @@ import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.j
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
+import { validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
@@ -1048,8 +1049,9 @@ const plugin = definePlugin({
   },
 
   async onValidateConfig(config) {
-    if (!config.telegramBotTokenRef || typeof config.telegramBotTokenRef !== "string") {
-      return { ok: false, errors: ["telegramBotTokenRef is required"] };
+    const secretRefErrors = validateSecretRefFields(config);
+    if (secretRefErrors.length > 0) {
+      return { ok: false, errors: secretRefErrors };
     }
     const allowlistErrors = validateTelegramAllowlists(config);
     if (allowlistErrors.length > 0) {
