@@ -159,7 +159,12 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 2. Run `/newbot` and follow the prompts to create a bot
 3. Save the bot token
 4. Send a message to your bot, then run `curl "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"` and find the `chat.id` field
-5. In Paperclip, go to **Settings -> Secrets -> Create new secret**, paste your bot token as the secret value, and copy the resulting UUID
+5. In Paperclip, create a **company secret** holding your bot token, by either:
+
+   - **UI:** Open any agent's **Configuration → Environment variables**, enter a name (e.g. `telegram-bot-token`) and the bot token as the value, then click **Create / Seal**. The secret is created at the **company level** (not bound to that agent — despite the agent-context UI) and the returned UUID can be used from any plugin in the company.
+   - **REST API:** `POST /api/companies/{companyId}/secrets` with body `{"name": "telegram-bot-token", "value": "<your-bot-token>", "provider": "local_encrypted"}`. The response contains the secret's UUID.
+
+   Copy the resulting secret UUID — you'll paste it into `telegramBotTokenRef` in the next step.
 6. Configure the plugin with the secret UUID in `telegramBotTokenRef` and your chat ID in `defaultChatId`
 7. If your Paperclip deployment requires authenticated board mutations, open the plugin settings page from a company context and complete **Board Access Connection**. This stores a Paperclip board API token as a company secret and lets Telegram approval actions authenticate without pasting raw tokens into the plugin config.
 
@@ -260,13 +265,12 @@ The plugin stores the resulting board API token as a Paperclip company secret an
 
 ### v0.2.1
 
-The `telegramBotTokenRef` and `transcriptionApiKeyRef` fields now require a Paperclip secret reference (a UUID), not the raw token value. If you previously entered your raw bot token in the field, follow these steps to migrate:
+The `telegramBotTokenRef` and `transcriptionApiKeyRef` fields now require a Paperclip secret reference (a UUID), not the raw token value. If you previously entered a raw bot token in the field, follow these steps to migrate:
 
-1. Go to **Settings -> Secrets -> Create new secret**
-2. Paste your Telegram bot token as the secret value and save
-3. Copy the resulting UUID
-4. Open **Plugin Settings for Telegram Bot** and paste the UUID into "Telegram Bot Token"
-5. Save and restart the plugin
+1. Create a company secret holding your bot token using one of the paths in the [Setup](#setup) section above (UI or REST API).
+2. Copy the returned secret UUID.
+3. Open **Plugin Settings for Telegram Bot** and paste the UUID into "Telegram Bot Token".
+4. Save and restart the plugin.
 
 The plugin will fail to activate if a raw token (non-UUID) is entered in the field.
 
