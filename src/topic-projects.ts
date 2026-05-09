@@ -47,7 +47,13 @@ export async function resolveMappedProjectIdForTopic(
     const exactMatch = projects.find((project) => project.name === match.projectName);
     if (exactMatch) return exactMatch.id;
     return projects.find((project) => project.name?.toLowerCase() === match.projectName.toLowerCase())?.id;
-  } catch {
+  } catch (err) {
+    ctx.logger.warn("Failed to look up project for legacy topic mapping", {
+      chatId,
+      companyId,
+      projectName: match.projectName,
+      error: String(err),
+    });
     return undefined;
   }
 }
