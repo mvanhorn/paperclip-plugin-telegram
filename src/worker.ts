@@ -415,12 +415,12 @@ const plugin = definePlugin({
               logger: ctx.logger,
             });
           } else {
-            ctx.logger.warn("Telegram getUpdates returned not-ok", {
+            ctx.logger.warn("Telegram getUpdates: unexpected response", {
               ok: data.ok,
+              hasResult: !!data.result,
               description: data.description,
               error_code: data.error_code,
             });
-            await new Promise((r) => setTimeout(r, 5000));
           }
         } catch (err) {
           ctx.logger.error("Telegram polling error", { error: String(err) });
