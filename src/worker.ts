@@ -51,6 +51,7 @@ import { validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import { resolveStartupTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
+import { loadStartupConfig, resolveCompatibleConfig } from "./config-compat.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -162,19 +163,19 @@ async function resolveConfig(
   fallback: TelegramConfig,
   companyId?: string | null,
 ): Promise<TelegramConfig> {
-  try {
-    const getConfig = ctx.config.get as unknown as (
-      params?: { companyId?: string | null },
-    ) => Promise<Record<string, unknown>>;
-    const scopedConfig = await getConfig(companyId ? { companyId } : undefined);
-    return { ...fallback, ...scopedConfig } as unknown as TelegramConfig;
-  } catch (err) {
-    ctx.logger.warn("Failed to load scoped Telegram plugin config; using startup config", {
-      companyId,
-      error: String(err),
-    });
-    return fallback;
-  }
+  return resolveCompatibleConfig(ctx, fallback as unknown as Record<string, unknown>, companyId) as Promise<TelegramConfig>;
+}
+
+async function resolveTelegramBotToken(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  companyId?: string | null,
+): Promise<string | undefined> {
+  const effectiveConfig = companyId ? await resolveConfig(ctx, config, companyId) : config;
+  if (!effectiveConfig.telegramBotTokenRef) return undefined;
+  return resolveStartupTelegramBotToken(ctx, effectiveConfig.telegramBotTokenRef, (health) => {
+    runtimeHealth = health;
+  });
 }
 
 function normalizeBoardAccessState(value: unknown): TelegramBoardAccessState {
@@ -253,6 +254,26 @@ async function resolveBoardApiToken(
   }
 
   return undefined;
+}
+
+async function resolveTelegramBotToken(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  companyId?: string | null,
+): Promise<string | null> {
+  const effectiveConfig = companyId ? await resolveConfig(ctx, config, companyId) : config;
+  const tokenRef = effectiveConfig.telegramBotTokenRef;
+  if (!tokenRef) return null;
+
+  try {
+    return await ctx.secrets.resolve(tokenRef);
+  } catch (err) {
+    ctx.logger.warn("Failed to resolve Telegram bot token secret", {
+      companyId,
+      error: String(err),
+    });
+    return null;
+  }
 }
 
 async function resolveCallbackCompanyId(
@@ -373,7 +394,7 @@ async function resolveCompanyIdOrNull(ctx: PluginContext, chatId: string): Promi
 
 const plugin = definePlugin({
   async setup(ctx) {
-    const rawConfig = await ctx.config.get();
+    const rawConfig = await loadStartupConfig(ctx, {} as Record<string, unknown>);
     ctx.logger.info("Telegram plugin config loaded");
     const config = rawConfig as unknown as TelegramConfig;
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
@@ -396,22 +417,13 @@ const plugin = definePlugin({
       });
     });
 
-    if (!config.telegramBotTokenRef) {
-      ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled");
-      return;
+    const startupToken = await resolveTelegramBotToken(ctx, config);
+    if (!startupToken) {
+      ctx.logger.warn("Telegram bot token is not resolvable during startup; setup will continue without global polling");
     }
-
-    const token = await resolveStartupTelegramBotToken(ctx, config.telegramBotTokenRef, (health) => {
-      runtimeHealth = health;
-    });
-    if (!token) {
-      ctx.logger.warn("Telegram plugin runtime disabled because bot token could not be resolved");
-      return;
-    }
-    const telegramToken = token;
 
     // --- Register bot commands with Telegram ---
-    if (config.enableCommands) {
+    if (config.enableCommands && startupToken) {
       const allCommands = [
         ...BOT_COMMANDS,
         { command: "commands", description: "Manage custom workflow commands" },
@@ -420,7 +432,7 @@ const plugin = definePlugin({
       // The host's worker-init RPC timeout is 15s; if api.telegram.org is
       // slow/unreachable, awaiting this call causes the worker to be SIGKILLed
       // before setup() completes. Fire-and-forget matches pollUpdates() below.
-      setMyCommands(ctx, token, allCommands)
+      setMyCommands(ctx, startupToken, allCommands)
         .then((registered) => {
           if (registered) {
             ctx.logger.info("Bot commands registered with Telegram");
@@ -441,7 +453,7 @@ const plugin = definePlugin({
       while (pollingActive) {
         try {
           const res = await ctx.http.fetch(
-            `${TELEGRAM_API}/bot${token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
+            `${TELEGRAM_API}/bot${startupToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
             { method: "GET" },
           );
           const data = (await res.json()) as {
@@ -453,7 +465,7 @@ const plugin = definePlugin({
             lastUpdateId = await processTelegramUpdateBatch({
               updates: data.result,
               lastUpdateId,
-              handleUpdate: (update) => handleUpdate(ctx, telegramToken, config, update, baseUrl, publicUrl),
+              handleUpdate: (update) => handleUpdate(ctx, startupToken!, config, update, baseUrl, publicUrl),
               persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
               logger: ctx.logger,
             });
@@ -465,7 +477,7 @@ const plugin = definePlugin({
       }
     }
 
-    if (config.enableCommands || config.enableInbound) {
+    if (startupToken && (config.enableCommands || config.enableInbound)) {
       pollUpdates().catch((err) =>
         ctx.logger.error("Polling loop crashed", { error: String(err) }),
       );
@@ -476,7 +488,7 @@ const plugin = definePlugin({
     });
 
     // --- Phase 2: ACP output listener (cross-plugin events) ---
-    setupAcpOutputListener(ctx, token);
+    setupAcpOutputListener(ctx, (event) => resolveTelegramBotToken(ctx, config, event.companyId));
 
     // --- Event subscriptions ---
 
@@ -499,6 +511,8 @@ const plugin = definePlugin({
       overrideTopicId?: string,
     ) => {
       const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+      const token = await resolveTelegramBotToken(ctx, effectiveConfig, event.companyId);
+      if (!token) return;
       const chatId = await resolveChat(
         ctx,
         event.companyId,
@@ -827,6 +841,8 @@ const plugin = definePlugin({
         const companies = await ctx.companies.list();
         for (const company of companies) {
           const effectiveConfig = await resolveConfig(ctx, config, company.id);
+          const token = await resolveTelegramBotToken(ctx, effectiveConfig, company.id);
+          if (!token) continue;
           const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
           const chatId = await resolveChat(ctx, company.id, effectiveConfig.digestChatId || effectiveConfig.defaultChatId);
           if (!chatId) continue;
@@ -962,6 +978,10 @@ const plugin = definePlugin({
     }, async (params: unknown, runCtx) => {
       const p = params as Record<string, unknown>;
       const effectiveConfig = await resolveConfig(ctx, config, runCtx.companyId);
+      const token = await resolveTelegramBotToken(ctx, effectiveConfig, runCtx.companyId);
+      if (!token) {
+        return { error: "Telegram bot token is not configured or could not be resolved for this company." };
+      }
       const escalationId = crypto.randomUUID();
       const timeoutMs = effectiveConfig.escalationTimeoutMs || 900000;
       const defaultAction = effectiveConfig.escalationDefaultAction || "defer";
@@ -1031,6 +1051,10 @@ const plugin = definePlugin({
         required: ["targetAgent", "reason", "contextSummary"],
       },
     }, async (params: unknown, runCtx) => {
+      const token = await resolveTelegramBotToken(ctx, config, runCtx.companyId);
+      if (!token) {
+        return { error: "Telegram bot token is not configured or could not be resolved for this company." };
+      }
       return handleHandoffToolCall(ctx, token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
     });
 
@@ -1052,6 +1076,10 @@ const plugin = definePlugin({
         required: ["targetAgent", "topic", "initialMessage"],
       },
     }, async (params: unknown, runCtx) => {
+      const token = await resolveTelegramBotToken(ctx, config, runCtx.companyId);
+      if (!token) {
+        return { error: "Telegram bot token is not configured or could not be resolved for this company." };
+      }
       return handleDiscussToolCall(ctx, token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
     });
 
@@ -1092,6 +1120,8 @@ const plugin = definePlugin({
     // --- Phase 1: Escalation timeout checker job ---
     ctx.jobs.register("check-escalation-timeouts", async () => {
       try {
+        const token = await resolveTelegramBotToken(ctx, config);
+        if (!token) return;
         await escalationManager.checkTimeouts(ctx, token);
       } catch (err) {
         ctx.logger.error("Escalation timeout check failed", { error: String(err) });
@@ -1101,6 +1131,8 @@ const plugin = definePlugin({
     // --- Phase 5: Watch checker job ---
     ctx.jobs.register("check-watches", async () => {
       try {
+        const token = await resolveTelegramBotToken(ctx, config);
+        if (!token) return;
         await checkWatches(ctx, token, {
           maxSuggestionsPerHourPerCompany: config.maxSuggestionsPerHourPerCompany ?? 10,
           watchDeduplicationWindowMs: config.watchDeduplicationWindowMs ?? 86400000,
