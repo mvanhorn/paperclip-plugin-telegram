@@ -157,6 +157,26 @@ function asNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+async function resolveConfig(
+  ctx: PluginContext,
+  fallback: TelegramConfig,
+  companyId?: string | null,
+): Promise<TelegramConfig> {
+  try {
+    const getConfig = ctx.config.get as unknown as (
+      params?: { companyId?: string | null },
+    ) => Promise<Record<string, unknown>>;
+    const scopedConfig = await getConfig(companyId ? { companyId } : undefined);
+    return { ...fallback, ...scopedConfig } as unknown as TelegramConfig;
+  } catch (err) {
+    ctx.logger.warn("Failed to load scoped Telegram plugin config; using startup config", {
+      companyId,
+      error: String(err),
+    });
+    return fallback;
+  }
+}
+
 function normalizeBoardAccessState(value: unknown): TelegramBoardAccessState {
   const record = isRecord(value) ? value : {};
   return {
@@ -478,10 +498,11 @@ const plugin = definePlugin({
       overrideChatId?: string,
       overrideTopicId?: string,
     ) => {
+      const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
       const chatId = await resolveChat(
         ctx,
         event.companyId,
-        overrideChatId || config.defaultChatId,
+        overrideChatId || effectiveConfig.defaultChatId,
       );
       if (!chatId) return;
       const linksOpts = await resolveIssueLinksOpts(event.companyId);
@@ -489,7 +510,7 @@ const plugin = definePlugin({
 
       let messageThreadId = parseTopicId(overrideTopicId);
       if (!messageThreadId) {
-        messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, config.topicRouting);
+        messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, effectiveConfig.topicRouting);
       }
 
       if (messageThreadId) {
@@ -554,14 +575,18 @@ const plugin = definePlugin({
     };
 
     if (config.notifyOnIssueCreated) {
-      ctx.events.on("issue.created", (event: PluginEvent) =>
-        notify(event, formatIssueCreated),
-      );
+      ctx.events.on("issue.created", async (event: PluginEvent) => {
+        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+        if (!effectiveConfig.notifyOnIssueCreated) return;
+        await notify(event, formatIssueCreated);
+      });
     }
 
     if (config.notifyOnIssueDone) {
       const doneDedupe = makeUpdateDedupe();
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
+        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+        if (!effectiveConfig.notifyOnIssueDone) return;
         const payload = event.payload as Record<string, unknown>;
         if (payload.status !== "done") return;
         if (!doneDedupe(`done|${event.entityId}`)) return;
@@ -592,6 +617,8 @@ const plugin = definePlugin({
       const assignmentDedupe = makeUpdateDedupe();
 
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
+        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+        if (!effectiveConfig.notifyOnIssueAssigned) return;
         const payload = event.payload as Record<string, unknown>;
         const prev = (payload._previous as Record<string, unknown> | undefined) ?? {};
 
@@ -601,7 +628,7 @@ const plugin = definePlugin({
           "assigneeAgentId" in payload && payload.assigneeAgentId !== prev.assigneeAgentId;
         if (!userChanged && !agentChanged) return;
 
-        if (config.onlyNotifyIfAssignedTo && payload.assigneeUserId !== config.onlyNotifyIfAssignedTo) {
+        if (effectiveConfig.onlyNotifyIfAssignedTo && payload.assigneeUserId !== effectiveConfig.onlyNotifyIfAssignedTo) {
           return;
         }
 
@@ -632,7 +659,9 @@ const plugin = definePlugin({
 
     if (config.notifyOnApprovalCreated) {
       ctx.events.on("approval.created", async (event: PluginEvent) => {
-        if (!shouldNotifyApproval(event, config.onlyNotifyBoardApprovals)) return;
+        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+        if (!effectiveConfig.notifyOnApprovalCreated) return;
+        if (!shouldNotifyApproval(event, effectiveConfig.onlyNotifyBoardApprovals)) return;
         const payload = event.payload as Record<string, unknown>;
         // Enrich with linked issue details (event only has issueIds)
         const issueIds = Array.isArray(payload.issueIds) ? payload.issueIds as string[] : [];
@@ -672,13 +701,15 @@ const plugin = definePlugin({
             ? `${approvalType} — ${agentLabel}`
             : approvalType;
         }
-        await notify(event, formatApprovalCreated, config.approvalsChatId, config.approvalsTopicId);
+        await notify(event, formatApprovalCreated, effectiveConfig.approvalsChatId, effectiveConfig.approvalsTopicId);
       });
     }
 
     if (config.notifyOnAgentError) {
       const agentErrorDedupe = makeUpdateDedupe(AGENT_ERROR_DEDUPLICATION_WINDOW_MS, 1000);
       ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
+        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+        if (!effectiveConfig.notifyOnAgentError) return;
         const payload = event.payload as Record<string, unknown>;
         const agentId = String(payload.agentId ?? event.entityId);
         if (payload.agentId && !payload.agentName) {
@@ -705,7 +736,7 @@ const plugin = definePlugin({
         const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
         const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
         if (!agentErrorDedupe(dedupeKey)) return;
-        await notify(event, formatAgentError, config.errorsChatId, config.errorsTopicId);
+        await notify(event, formatAgentError, effectiveConfig.errorsChatId, effectiveConfig.errorsTopicId);
       });
     }
 
@@ -721,12 +752,16 @@ const plugin = definePlugin({
 
     if (config.notifyOnAgentRunStarted) {
       ctx.events.on("agent.run.started", async (event: PluginEvent) => {
+        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+        if (!effectiveConfig.notifyOnAgentRunStarted) return;
         await enrichAgentName(event);
         await notify(event, formatAgentRunStarted);
       });
     }
     if (config.notifyOnAgentRunFinished) {
       ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
+        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
+        if (!effectiveConfig.notifyOnAgentRunFinished) return;
         await enrichAgentName(event);
         await notify(event, formatAgentRunFinished);
       });
@@ -791,7 +826,9 @@ const plugin = definePlugin({
 
         const companies = await ctx.companies.list();
         for (const company of companies) {
-          const chatId = await resolveChat(ctx, company.id, config.digestChatId || config.defaultChatId);
+          const effectiveConfig = await resolveConfig(ctx, config, company.id);
+          const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
+          const chatId = await resolveChat(ctx, company.id, effectiveConfig.digestChatId || effectiveConfig.defaultChatId);
           if (!chatId) continue;
 
           try {
@@ -832,7 +869,7 @@ const plugin = definePlugin({
             const formatIssueItem = (i: Issue) => {
               const id = i.identifier ?? i.id;
               const idText = issuePrefix
-                ? `[${escapeMarkdownV2(id)}](${publicUrl}/${issuePrefix}/issues/${id})`
+                ? `[${escapeMarkdownV2(id)}](${effectivePublicUrl}/${issuePrefix}/issues/${id})`
                 : escapeMarkdownV2(id);
               return `  ${idText} \\- ${escapeMarkdownV2(i.title)}`;
             };
@@ -850,7 +887,7 @@ const plugin = definePlugin({
               for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
             }
 
-            const digestThreadId = await resolveDigestThreadId(ctx, token, chatId, config.digestTopicId);
+            const digestThreadId = await resolveDigestThreadId(ctx, token, chatId, effectiveConfig.digestTopicId);
 
             await sendMessage(ctx, token, chatId, lines.join("\n"), {
               parseMode: "MarkdownV2",
@@ -868,7 +905,7 @@ const plugin = definePlugin({
               ctx,
               token,
               chatId,
-              config.errorsTopicId || config.digestTopicId,
+              effectiveConfig.errorsTopicId || effectiveConfig.digestTopicId,
             );
 
             await sendMessage(ctx, token, chatId, text, {
@@ -924,14 +961,15 @@ const plugin = definePlugin({
       },
     }, async (params: unknown, runCtx) => {
       const p = params as Record<string, unknown>;
+      const effectiveConfig = await resolveConfig(ctx, config, runCtx.companyId);
       const escalationId = crypto.randomUUID();
-      const timeoutMs = config.escalationTimeoutMs || 900000;
-      const defaultAction = config.escalationDefaultAction || "defer";
+      const timeoutMs = effectiveConfig.escalationTimeoutMs || 900000;
+      const defaultAction = effectiveConfig.escalationDefaultAction || "defer";
 
       const resolvedEscalationChatId = await resolveChat(
         ctx,
         runCtx.companyId,
-        config.escalationChatId,
+        effectiveConfig.escalationChatId,
       );
       if (!resolvedEscalationChatId) {
         ctx.logger.warn("Escalation received but no escalationChatId configured");
@@ -964,8 +1002,8 @@ const plugin = definePlugin({
       await escalationManager.create(ctx, token, escalationEvent, resolvedEscalationChatId);
 
       // Send hold message to the originating chat if configured
-      if (config.escalationHoldMessage && escalationEvent.originChatId) {
-        const holdText = escapeMarkdownV2(config.escalationHoldMessage);
+      if (effectiveConfig.escalationHoldMessage && escalationEvent.originChatId) {
+        const holdText = escapeMarkdownV2(effectiveConfig.escalationHoldMessage);
         await sendMessage(ctx, token, escalationEvent.originChatId, holdText, {
           parseMode: "MarkdownV2",
           messageThreadId: escalationEvent.originThreadId ? Number(escalationEvent.originThreadId) : undefined,
@@ -1118,8 +1156,10 @@ export async function handleUpdate(
 
   if (update.callback_query) {
     const companyId = await resolveCallbackCompanyId(ctx, update.callback_query);
-    const boardApiToken = await resolveBoardApiToken(ctx, config, companyId);
-    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl, boardApiToken);
+    const effectiveConfig = await resolveConfig(ctx, config, companyId);
+    const effectiveBaseUrl = effectiveConfig.paperclipBaseUrl || baseUrl;
+    const boardApiToken = await resolveBoardApiToken(ctx, effectiveConfig, companyId);
+    await handleCallbackQuery(ctx, token, update.callback_query, effectiveBaseUrl, boardApiToken);
     return;
   }
 
@@ -1134,11 +1174,13 @@ export async function handleUpdate(
   if (hasMedia) {
     const companyId = await resolveCompanyIdOrNull(ctx, chatId);
     if (companyId) {
+      const effectiveConfig = await resolveConfig(ctx, config, companyId);
+      const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
       const handled = await handleMediaMessage(ctx, token, msg as Parameters<typeof handleMediaMessage>[2], {
-        briefAgentId: config.briefAgentId ?? "",
-        briefAgentChatIds: config.briefAgentChatIds ?? [],
-        transcriptionApiKeyRef: config.transcriptionApiKeyRef ?? "",
-        publicUrl,
+        briefAgentId: effectiveConfig.briefAgentId ?? "",
+        briefAgentChatIds: effectiveConfig.briefAgentChatIds ?? [],
+        transcriptionApiKeyRef: effectiveConfig.transcriptionApiKeyRef ?? "",
+        publicUrl: effectivePublicUrl,
       }, companyId);
       if (handled) return;
     } else {
@@ -1173,6 +1215,9 @@ export async function handleUpdate(
     // undefined on unlinked chats: /connect and /help still work, and the
     // company-scoped handlers answer with their "not linked" guidance.
     const companyId = (await resolveCompanyIdOrNull(ctx, chatId)) ?? undefined;
+    const effectiveConfig = companyId ? await resolveConfig(ctx, config, companyId) : config;
+    const effectiveBaseUrl = effectiveConfig.paperclipBaseUrl || baseUrl;
+    const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveBaseUrl;
 
     // Phase 4: Check custom commands first
     if (command === "commands") {
@@ -1184,8 +1229,8 @@ export async function handleUpdate(
     if (handledCustom) return;
 
     // Built-in commands
-    const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, config, companyId) : undefined;
-    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken, config.maxAgentsPerThread);
+    const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, effectiveConfig, companyId) : undefined;
+    await handleCommand(ctx, token, chatId, command, args, threadId, effectiveBaseUrl, effectivePublicUrl, companyId, boardApiToken, effectiveConfig.maxAgentsPerThread);
     return;
   }
 
