@@ -53,6 +53,10 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "string",
         format: "secret-ref",
       },
+      transcriptionApiKeyRef: {
+        type: "string",
+        format: "secret-ref",
+      },
     },
   },
   ui: {
