@@ -41,6 +41,7 @@ import {
   persistTelegramUpdateOffset,
   processTelegramUpdateBatch,
 } from "./polling-offset.js";
+import { getTelegramUpdateChatId, selectTelegramRuntimeForUpdate } from "./polling-dispatch.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.js";
@@ -282,6 +283,12 @@ type TelegramCompanyRuntime = {
   token: string;
   baseUrl: string;
   publicUrl: string;
+};
+
+type TelegramPollingRuntimeGroup = {
+  tokenRef: string;
+  token: string;
+  runtimes: TelegramCompanyRuntime[];
 };
 
 async function resolveCompanyRuntimes(
@@ -559,11 +566,11 @@ const plugin = definePlugin({
     let pollingActive = true;
     let lastUpdateId = await getPersistedTelegramUpdateOffset(ctx);
 
-    async function pollUpdates(runtime: TelegramCompanyRuntime): Promise<void> {
+    async function pollUpdates(group: TelegramPollingRuntimeGroup): Promise<void> {
       while (pollingActive) {
         try {
           const res = await ctx.http.fetch(
-            `${TELEGRAM_API}/bot${runtime.token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
+            `${TELEGRAM_API}/bot${group.token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
             { method: "GET" },
           );
           const data = (await res.json()) as {
@@ -575,31 +582,65 @@ const plugin = definePlugin({
             lastUpdateId = await processTelegramUpdateBatch({
               updates: data.result,
               lastUpdateId,
-              handleUpdate: (update) => handleUpdate(
-                ctx,
-                runtime.token,
-                runtime.config,
-                update,
-                runtime.baseUrl,
-                runtime.publicUrl,
-              ),
+              handleUpdate: async (update) => {
+                const runtime = selectTelegramRuntimeForUpdate(group.runtimes, update);
+                if (!runtime) {
+                  ctx.logger.warn("No company-scoped Telegram runtime matched update", {
+                    updateId: update.update_id,
+                    chatId: getTelegramUpdateChatId(update),
+                    tokenRef: group.tokenRef,
+                  });
+                  return;
+                }
+
+                await handleUpdate(
+                  ctx,
+                  group.token,
+                  runtime.config,
+                  update,
+                  runtime.baseUrl,
+                  runtime.publicUrl,
+                  undefined,
+                  runtime.companyId,
+                );
+              },
               persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
               logger: ctx.logger,
             });
           }
         } catch (err) {
-          ctx.logger.error("Telegram polling error", { companyId: runtime.companyId, error: String(err) });
+          ctx.logger.error("Telegram polling error", {
+            tokenRef: group.tokenRef,
+            companyIds: group.runtimes.map((runtime) => runtime.companyId),
+            error: String(err),
+          });
           await new Promise((r) => setTimeout(r, 5000));
         }
       }
     }
 
-    const pollingRefs = new Set<string>();
+    const pollingGroups = new Map<string, TelegramPollingRuntimeGroup>();
     for (const runtime of pollingRuntimes) {
-      if (pollingRefs.has(runtime.config.telegramBotTokenRef)) continue;
-      pollingRefs.add(runtime.config.telegramBotTokenRef);
-      pollUpdates(runtime).catch((err) =>
-        ctx.logger.error("Polling loop crashed", { companyId: runtime.companyId, error: String(err) }),
+      const tokenRef = runtime.config.telegramBotTokenRef;
+      const existing = pollingGroups.get(tokenRef);
+      if (existing) {
+        existing.runtimes.push(runtime);
+      } else {
+        pollingGroups.set(tokenRef, {
+          tokenRef,
+          token: runtime.token,
+          runtimes: [runtime],
+        });
+      }
+    }
+
+    for (const group of pollingGroups.values()) {
+      pollUpdates(group).catch((err) =>
+        ctx.logger.error("Polling loop crashed", {
+          tokenRef: group.tokenRef,
+          companyIds: group.runtimes.map((runtime) => runtime.companyId),
+          error: String(err),
+        }),
       );
     }
 
@@ -1325,6 +1366,7 @@ async function handleUpdate(
   baseUrl: string,
   publicUrl?: string,
   boardApiToken?: string,
+  runtimeCompanyId?: string,
 ): Promise<void> {
   if (!isTelegramUpdateAllowed(config, update)) {
     const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
@@ -1355,7 +1397,7 @@ async function handleUpdate(
   // Phase 3: Handle media messages
   const hasMedia = !!(msg.voice || msg.audio || msg.video_note || msg.document || msg.photo);
   if (hasMedia) {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = runtimeCompanyId ?? await resolveCompanyId(ctx, chatId);
     const effectiveConfig = await resolveConfig(ctx, config, companyId);
     const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
     const handled = await handleMediaMessage(ctx, token, msg as Parameters<typeof handleMediaMessage>[2], {
@@ -1373,9 +1415,9 @@ async function handleUpdate(
 
   // Route thread messages to agent sessions
   if (threadId) {
-    const isCommand = text.startsWith("/");
-    if (!isCommand) {
-      const companyId = await resolveCompanyId(ctx, chatId);
+      const isCommand = text.startsWith("/");
+      if (!isCommand) {
+      const companyId = runtimeCompanyId ?? await resolveCompanyId(ctx, chatId);
       const replyToId = msg.reply_to_message?.message_id;
       const routed = await routeMessageToAgent(ctx, token, chatId, threadId, text, replyToId, companyId);
       if (routed) return;
@@ -1387,7 +1429,7 @@ async function handleUpdate(
     const fullCommand = text.slice(botCommand.offset, botCommand.offset + botCommand.length);
     const command = fullCommand.replace(/^\//, "").replace(/@.*$/, "");
     const args = text.slice(botCommand.offset + botCommand.length).trim();
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = runtimeCompanyId ?? await resolveCompanyId(ctx, chatId);
     const effectiveConfig = await resolveConfig(ctx, config, companyId);
     const effectiveBaseUrl = effectiveConfig.paperclipBaseUrl || baseUrl;
     const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveBaseUrl;
@@ -1408,7 +1450,7 @@ async function handleUpdate(
   }
 
   if (config.enableInbound && msg.reply_to_message?.from?.is_bot) {
-    const companyId = await resolveCompanyId(ctx, chatId);
+    const companyId = runtimeCompanyId ?? await resolveCompanyId(ctx, chatId);
     const replyToId = msg.reply_to_message.message_id;
     const mapping = await ctx.state.get({
       scopeKind: "company",

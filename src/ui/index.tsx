@@ -48,6 +48,14 @@ type Notice = {
   text?: string;
 };
 
+type CompanySecretSummary = {
+  id: string;
+  name: string;
+  key?: string | null;
+  status?: string | null;
+  latestVersion?: number | null;
+};
+
 type TelegramRoutingConfig = {
   defaultChatId: string;
   topicRouting: boolean;
@@ -565,6 +573,12 @@ async function fetchPluginConfig(companyId?: string | null): Promise<Record<stri
     pluginConfigPath(companyId),
   );
   return record?.configJson && typeof record.configJson === "object" ? record.configJson : {};
+}
+
+async function fetchCompanySecrets(companyId: string): Promise<CompanySecretSummary[]> {
+  return fetchHostJson<CompanySecretSummary[]>(
+    `/api/companies/${encodeURIComponent(companyId)}/secrets`,
+  );
 }
 
 async function savePluginConfig(configJson: Record<string, unknown>, companyId?: string | null): Promise<void> {
@@ -1224,20 +1238,21 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
         <div style={{ display: "grid", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Connection & URLs</h2>
           <p style={{ color: "#6b7280", margin: 0 }}>
-            Core connection values used by the Telegram worker. Save the bot token as a Paperclip secret and paste its secret UUID here.
+            Core connection values used by the Telegram worker. Select company secrets for sensitive values; secret values are never shown here.
           </p>
         </div>
 
         <div style={{ display: "grid", gap: 12 }}>
-          <TextField
+          <SecretRefField
+            companyId={companyId}
             disabled={connectionLoading || connectionSaving}
             label="Telegram bot token secret ref"
             onChange={(value) => updateConnectionField("telegramBotTokenRef", value)}
-            placeholder="Secret UUID from Paperclip settings"
+            placeholder="Secret UUID fallback"
             value={connectionConfig.telegramBotTokenRef}
           >
-            Secret UUID for your Telegram bot token from @BotFather. The plugin resolves this secret before polling Telegram.
-          </TextField>
+            Select the company secret that stores your Telegram bot token from @BotFather. The plugin resolves this secret before polling Telegram.
+          </SecretRefField>
           <TextField
             disabled={connectionLoading || connectionSaving}
             label="Paperclip API URL"
@@ -1383,15 +1398,16 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
         </div>
 
         <div style={{ borderTop: "1px solid #e5e7eb", display: "grid", gap: 12, paddingTop: 14 }}>
-          <TextField
+          <SecretRefField
+            companyId={companyId}
             disabled={boardConfigLoading || boardConfigSaving}
             label="Board API token secret ref fallback"
             onChange={(value) => updateBoardField("paperclipBoardApiTokenRef", value)}
-            placeholder="Optional Paperclip secret UUID"
+            placeholder="Optional secret UUID fallback"
             value={boardConfig.paperclipBoardApiTokenRef}
           >
             Optional manual fallback for approval buttons and /approve. The Board Access Connection above is preferred because it creates and tracks the company-scoped secret for you.
-          </TextField>
+          </SecretRefField>
 
           {boardConfigMessage ? <NoticeBlock notice={boardConfigMessage} /> : null}
 
@@ -1971,15 +1987,16 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
         </div>
 
         <div style={{ display: "grid", gap: 12 }}>
-          <TextField
+          <SecretRefField
+            companyId={companyId}
             disabled={mediaLoading || mediaSaving}
-            label="Transcription API key secret ref"
+            label="OpenAI transcription secret"
             onChange={(value) => updateMediaField("transcriptionApiKeyRef", value)}
-            placeholder="OpenAI API key secret UUID"
+            placeholder="OpenAI API key secret UUID fallback"
             value={mediaConfig.transcriptionApiKeyRef}
           >
-            Secret UUID for the OpenAI API key used to transcribe voice and audio before routing media to the Brief Agent or an active topic agent session.
-          </TextField>
+            Select the company secret used for audio transcription. Secret values are never shown to the plugin UI.
+          </SecretRefField>
           <TextField
             disabled={mediaLoading || mediaSaving}
             label="Brief Agent ID"
@@ -2289,6 +2306,103 @@ function NoticeBlock({ notice }: { notice: Notice }): React.JSX.Element {
       <strong>{notice.title}</strong>
       {notice.text ? <p style={{ margin: "6px 0 0" }}>{notice.text}</p> : null}
     </div>
+  );
+}
+
+function SecretRefField({
+  label,
+  value,
+  placeholder,
+  disabled,
+  companyId,
+  children,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  disabled: boolean;
+  companyId: string;
+  children: React.ReactNode;
+  onChange(value: string): void;
+}): React.JSX.Element {
+  const [secrets, setSecrets] = useState<CompanySecretSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSecrets(): Promise<void> {
+      if (!companyId) {
+        setSecrets([]);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const nextSecrets = await fetchCompanySecrets(companyId);
+        if (!cancelled) {
+          setSecrets(nextSecrets.filter((secret) => secret.status !== "deleted"));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(getErrorMessage(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadSecrets();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
+
+  const selectedValue = secrets.some((secret) => secret.id === value) ? value : "";
+  const fieldDisabled = disabled || loading || !companyId;
+
+  return (
+    <label style={{ display: "grid", gap: 5 }}>
+      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>{label}</span>
+      <select
+        disabled={fieldDisabled}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        style={standardInputStyle}
+        value={selectedValue}
+      >
+        <option value="">
+          {!companyId
+            ? "Open inside a company to select a secret"
+            : loading
+              ? "Loading company secrets..."
+              : value && !selectedValue
+                ? "Manual UUID selected"
+                : "Select a company secret"}
+        </option>
+        {secrets.map((secret) => (
+          <option key={secret.id} value={secret.id}>
+            {secret.name || secret.key || secret.id}
+            {secret.key && secret.key !== secret.name ? ` (${secret.key})` : ""}
+            {secret.latestVersion ? ` · v${secret.latestVersion}` : ""}
+          </option>
+        ))}
+      </select>
+      <input
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        placeholder={placeholder}
+        style={standardInputStyle}
+        type="text"
+        value={value}
+      />
+      <span style={{ color: "#6b7280", fontSize: 12 }}>{children}</span>
+      {error ? <span style={{ color: "#b91c1c", fontSize: 12 }}>Could not load company secrets: {error}</span> : null}
+    </label>
   );
 }
 
