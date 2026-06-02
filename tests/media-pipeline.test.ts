@@ -184,6 +184,7 @@ describe("Audio type detection", () => {
 
     // Should show transcription preview
     expect(sentMessages.some(m => m.text.includes("Transcription"))).toBe(true);
+    expect(ctx.secrets.resolve).toHaveBeenCalledWith("openai-key", "company-1");
   });
 
   it("detects audio messages as audio", async () => {

@@ -340,6 +340,15 @@ async function handleConnect(
       return;
     }
 
+    const existing = await ctx.state.get({
+      scopeKind: "instance",
+      stateKey: `chat_${chatId}`,
+    }) as { companyId?: string } | null;
+    if (existing?.companyId === match.id) {
+      ctx.logger.info("Chat already linked to company", { chatId, companyId: match.id, companyName: match.name });
+      return;
+    }
+
     // Inbound: chat → company (for commands like /status)
     await ctx.state.set(
       { scopeKind: "instance", stateKey: `chat_${chatId}` },
