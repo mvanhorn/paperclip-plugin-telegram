@@ -125,15 +125,17 @@ export async function checkWatches(
   ctx: PluginContext,
   token: string,
   config: { maxSuggestionsPerHourPerCompany: number; watchDeduplicationWindowMs: number },
+  companyId?: string,
 ): Promise<void> {
-  // Get all companies that have watches
-  const companies = await ctx.companies.list();
+  const companyIds = companyId
+    ? [companyId]
+    : (await ctx.companies.list()).map((company) => company.id);
 
-  for (const company of companies) {
+  for (const currentCompanyId of companyIds) {
     try {
-      await checkWatchesForCompany(ctx, token, company.id, config);
+      await checkWatchesForCompany(ctx, token, currentCompanyId, config);
     } catch (err) {
-      ctx.logger.error("Watch check failed for company", { companyId: company.id, error: String(err) });
+      ctx.logger.error("Watch check failed for company", { companyId: currentCompanyId, error: String(err) });
     }
   }
 }

@@ -835,7 +835,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setConnectionLoading(true);
       setConnectionMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextConnectionConfig = extractConnectionConfig(config);
         setConnectionConfig(nextConnectionConfig);
@@ -860,7 +860,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [companyId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1028,9 +1028,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setConnectionSaving(true);
     setConnectionMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...connectionConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(nextConfig, companyId);
       setConnectionSnapshot(connectionConfig);
       setConnectionMessage({
         tone: "success",

@@ -233,6 +233,18 @@ describe("formatAgentRunStarted", () => {
     const msg = formatAgentRunStarted(mockEvent());
     expect(msg.options.disableNotification).toBe(true);
   });
+
+  it("includes issue identifier and run_id", () => {
+    const msg = formatAgentRunStarted(mockEvent({
+      issueIdentifier: "PAC-175",
+      runId: "run-456",
+    }));
+    expect(msg.text).toContain("started a new run");
+    expect(msg.text).toContain("*PAC\\-175*");
+    expect(msg.text).toContain("\nrun\\_id: `run\\-456`");
+    expect(msg.text).not.toContain("\n\nrun\\_id");
+    expect(msg.text).not.toContain("issue\\_id");
+  });
 });
 
 describe("formatAgentRunFinished", () => {
@@ -245,5 +257,17 @@ describe("formatAgentRunFinished", () => {
   it("disables notification", () => {
     const msg = formatAgentRunFinished(mockEvent());
     expect(msg.options.disableNotification).toBe(true);
+  });
+
+  it("includes issue identifier and run_id", () => {
+    const msg = formatAgentRunFinished(mockEvent({
+      issueIdentifier: "PAC-175",
+      runId: "run-456",
+    }));
+    expect(msg.text).toContain("completed successfully");
+    expect(msg.text).toContain("*PAC\\-175*");
+    expect(msg.text).toContain("\nrun\\_id: `run\\-456`");
+    expect(msg.text).not.toContain("\n\nrun\\_id");
+    expect(msg.text).not.toContain("issue\\_id");
   });
 });
