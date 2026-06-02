@@ -59,7 +59,7 @@ export async function handleMediaMessage(
   // Transcribe audio/voice if applicable
   if (isAudio && config.transcriptionApiKeyRef) {
     try {
-      const transcription = await transcribeAudio(ctx, token, fileId, config.transcriptionApiKeyRef);
+      const transcription = await transcribeAudio(ctx, token, fileId, config.transcriptionApiKeyRef, companyId);
       if (transcription) {
         textContent = transcription;
 
@@ -175,6 +175,7 @@ async function transcribeAudio(
   botToken: string,
   fileId: string,
   transcriptionApiKeyRef: string,
+  companyId: string,
 ): Promise<string | null> {
   // 1. Get file path from Telegram (JSON response — ctx.http.fetch works fine for this)
   const fileRes = await ctx.http.fetch(
@@ -193,7 +194,8 @@ async function transcribeAudio(
   const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
 
   // 3. Resolve the OpenAI API key from Paperclip secrets
-  const apiKey = await ctx.secrets.resolve(transcriptionApiKeyRef);
+  const resolveSecret = ctx.secrets.resolve as (secretRef: string, companyId?: string | null) => Promise<string>;
+  const apiKey = await resolveSecret(transcriptionApiKeyRef, companyId);
 
   // 4. Build multipart form data manually (native FormData + Blob works in Node 18+)
   const formData = new FormData();
