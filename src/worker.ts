@@ -228,7 +228,8 @@ async function resolveBoardApiToken(
     if (seen.has(candidate.ref)) continue;
     seen.add(candidate.ref);
     try {
-      return await ctx.secrets.resolve(candidate.ref);
+      const resolveSecret = ctx.secrets.resolve as (secretRef: string, companyId?: string | null) => Promise<string>;
+      return await resolveSecret(candidate.ref, companyId);
     } catch (err) {
       ctx.logger.warn("Failed to resolve board API token secret", {
         source: candidate.source,
@@ -250,8 +251,22 @@ async function resolveTelegramBotToken(
   const tokenRef = effectiveConfig.telegramBotTokenRef;
   if (!tokenRef) return null;
 
+  return resolveTelegramBotTokenRef(ctx, tokenRef, companyId);
+}
+
+async function resolveTelegramBotTokenRef(
+  ctx: PluginContext,
+  tokenRef: string,
+  companyId?: string | null,
+): Promise<string | null> {
+  if (!companyId) {
+    ctx.logger.warn("Telegram bot token secret requires company context");
+    return null;
+  }
+
   try {
-    return await ctx.secrets.resolve(tokenRef);
+    const resolveSecret = ctx.secrets.resolve as (secretRef: string, companyId?: string | null) => Promise<string>;
+    return await resolveSecret(tokenRef, companyId);
   } catch (err) {
     ctx.logger.warn("Failed to resolve Telegram bot token secret", {
       companyId,
@@ -259,6 +274,78 @@ async function resolveTelegramBotToken(
     });
     return null;
   }
+}
+
+type TelegramCompanyRuntime = {
+  companyId: string;
+  config: TelegramConfig;
+  token: string;
+  baseUrl: string;
+  publicUrl: string;
+};
+
+async function resolveCompanyRuntimes(
+  ctx: PluginContext,
+  startupConfig: TelegramConfig,
+  predicate: (config: TelegramConfig) => boolean,
+): Promise<TelegramCompanyRuntime[]> {
+  const companies = await ctx.companies.list();
+  const runtimes: TelegramCompanyRuntime[] = [];
+
+  for (const company of companies) {
+    let scopedConfig: Record<string, unknown>;
+    try {
+      const getConfig = ctx.config.get as unknown as (
+        params?: { companyId?: string | null },
+      ) => Promise<Record<string, unknown>>;
+      scopedConfig = await getConfig({ companyId: company.id });
+    } catch (err) {
+      ctx.logger.warn("Company-scoped Telegram plugin config unavailable; skipping company runtime", {
+        companyId: company.id,
+        error: String(err),
+      });
+      continue;
+    }
+    if (!("telegramBotTokenRef" in scopedConfig)) continue;
+
+    const effectiveConfig = { ...startupConfig, ...scopedConfig } as unknown as TelegramConfig;
+    const hasCompanyTelegramRoute = [
+      "telegramBotTokenRef",
+      "defaultChatId",
+      "approvalsChatId",
+      "approvalsTopicId",
+      "errorsChatId",
+      "errorsTopicId",
+      "digestChatId",
+      "digestTopicId",
+      "escalationChatId",
+    ].some((key) => {
+      const value = effectiveConfig[key as keyof TelegramConfig];
+      const startupValue = startupConfig[key as keyof TelegramConfig];
+      return typeof value === "string" && value.trim() && value !== startupValue;
+    });
+    if (!hasCompanyTelegramRoute) continue;
+
+    if (!predicate(effectiveConfig)) continue;
+
+    const tokenRef = effectiveConfig.telegramBotTokenRef;
+    if (!tokenRef) continue;
+
+    const token = await resolveTelegramBotTokenRef(ctx, tokenRef, company.id);
+    if (!token) continue;
+
+    const baseUrl = effectiveConfig.paperclipBaseUrl || startupConfig.paperclipBaseUrl || "http://localhost:3100";
+    const publicUrl = effectiveConfig.paperclipPublicUrl || baseUrl;
+    runtimes.push({
+      companyId: company.id,
+      config: effectiveConfig,
+      token,
+      baseUrl,
+      publicUrl,
+    });
+  }
+
+  return runtimes;
 }
 
 async function resolveCallbackCompanyId(
@@ -274,7 +361,10 @@ async function resolveCallbackCompanyId(
     stateKey: `msg_${chatId}_${messageId}`,
   }) as { companyId?: string } | null;
 
-  return mapping?.companyId ?? null;
+  if (mapping?.companyId) return mapping.companyId;
+
+  const boardAccessState = await loadBoardAccessState(ctx);
+  return boardAccessState.companyId ?? null;
 }
 
 /**
@@ -352,6 +442,53 @@ async function resolveDigestThreadId(
   return await isForum(ctx, token, chatId) ? GENERAL_TOPIC_THREAD_ID : undefined;
 }
 
+function resolveDigestMode(config: TelegramConfig): TelegramConfig["digestMode"] {
+  return (config as Record<string, unknown>).dailyDigestEnabled === true && config.digestMode === "off"
+    ? "daily"
+    : config.digestMode ?? "off";
+}
+
+function parseDigestTime(value: string | undefined): { hour: number; minute: number } | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = /^(\d{1,2})(?::(\d{2}))?$/.exec(trimmed);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = match[2] === undefined ? 0 : Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
+function digestTimesForConfig(config: TelegramConfig): Array<{ hour: number; minute: number }> {
+  const mode = resolveDigestMode(config);
+  if (mode === "off") return [];
+  if (mode === "daily") {
+    return [parseDigestTime(config.dailyDigestTime)].filter((time): time is { hour: number; minute: number } => Boolean(time));
+  }
+  if (mode === "bidaily") {
+    return [parseDigestTime(config.dailyDigestTime), parseDigestTime(config.bidailySecondTime)]
+      .filter((time): time is { hour: number; minute: number } => Boolean(time));
+  }
+  return (config.tridailyTimes || "07:00,13:00,19:00")
+    .split(",")
+    .map((time) => parseDigestTime(time))
+    .filter((time): time is { hour: number; minute: number } => Boolean(time));
+}
+
+function resolveDigestSlot(
+  config: TelegramConfig,
+  date: Date,
+): { dateKey: string; timeKey: string } | null {
+  const hour = date.getUTCHours();
+  const minute = date.getUTCMinutes();
+  const match = digestTimesForConfig(config).find((time) => time.hour === hour && time.minute === minute);
+  if (!match) return null;
+  const dateKey = date.toISOString().slice(0, 10);
+  const timeKey = `${String(match.hour).padStart(2, "0")}:${String(match.minute).padStart(2, "0")}`;
+  return { dateKey, timeKey };
+}
+
 async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<string> {
   const mapping = await ctx.state.get({
     scopeKind: "instance",
@@ -385,29 +522,34 @@ const plugin = definePlugin({
       });
     });
 
-    const startupToken = await resolveTelegramBotToken(ctx, config);
-    if (!startupToken) {
-      ctx.logger.warn("Telegram bot token is not resolvable during startup; setup will continue without global polling");
+    const pollingRuntimes = await resolveCompanyRuntimes(
+      ctx,
+      config,
+      (effectiveConfig) => Boolean(effectiveConfig.enableCommands || effectiveConfig.enableInbound),
+    );
+    if (pollingRuntimes.length === 0) {
+      ctx.logger.warn("No company-scoped Telegram bot token is resolvable during startup; setup will continue without polling");
     }
 
-    // --- Register bot commands with Telegram ---
-    if (config.enableCommands && startupToken) {
+    const commandRegistrationRefs = new Set<string>();
+    for (const runtime of pollingRuntimes) {
+      if (!runtime.config.enableCommands) continue;
+      if (commandRegistrationRefs.has(runtime.config.telegramBotTokenRef)) continue;
+      commandRegistrationRefs.add(runtime.config.telegramBotTokenRef);
+
       const allCommands = [
         ...BOT_COMMANDS,
         { command: "commands", description: "Manage custom workflow commands" },
       ];
-      // Non-blocking init: don't hold up worker initialize on external API.
-      // The host's worker-init RPC timeout is 15s; if api.telegram.org is
-      // slow/unreachable, awaiting this call causes the worker to be SIGKILLed
-      // before setup() completes. Fire-and-forget matches pollUpdates() below.
-      setMyCommands(ctx, startupToken, allCommands)
+      setMyCommands(ctx, runtime.token, allCommands)
         .then((registered) => {
           if (registered) {
-            ctx.logger.info("Bot commands registered with Telegram");
+            ctx.logger.info("Bot commands registered with Telegram", { companyId: runtime.companyId });
           }
         })
         .catch((err) => {
           ctx.logger.error("Failed to register bot commands", {
+            companyId: runtime.companyId,
             error: String(err),
           });
         });
@@ -417,11 +559,11 @@ const plugin = definePlugin({
     let pollingActive = true;
     let lastUpdateId = await getPersistedTelegramUpdateOffset(ctx);
 
-    async function pollUpdates(): Promise<void> {
+    async function pollUpdates(runtime: TelegramCompanyRuntime): Promise<void> {
       while (pollingActive) {
         try {
           const res = await ctx.http.fetch(
-            `${TELEGRAM_API}/bot${startupToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
+            `${TELEGRAM_API}/bot${runtime.token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
             { method: "GET" },
           );
           const data = (await res.json()) as {
@@ -433,21 +575,31 @@ const plugin = definePlugin({
             lastUpdateId = await processTelegramUpdateBatch({
               updates: data.result,
               lastUpdateId,
-              handleUpdate: (update) => handleUpdate(ctx, startupToken!, config, update, baseUrl, publicUrl),
+              handleUpdate: (update) => handleUpdate(
+                ctx,
+                runtime.token,
+                runtime.config,
+                update,
+                runtime.baseUrl,
+                runtime.publicUrl,
+              ),
               persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
               logger: ctx.logger,
             });
           }
         } catch (err) {
-          ctx.logger.error("Telegram polling error", { error: String(err) });
+          ctx.logger.error("Telegram polling error", { companyId: runtime.companyId, error: String(err) });
           await new Promise((r) => setTimeout(r, 5000));
         }
       }
     }
 
-    if (startupToken && (config.enableCommands || config.enableInbound)) {
-      pollUpdates().catch((err) =>
-        ctx.logger.error("Polling loop crashed", { error: String(err) }),
+    const pollingRefs = new Set<string>();
+    for (const runtime of pollingRuntimes) {
+      if (pollingRefs.has(runtime.config.telegramBotTokenRef)) continue;
+      pollingRefs.add(runtime.config.telegramBotTokenRef);
+      pollUpdates(runtime).catch((err) =>
+        ctx.logger.error("Polling loop crashed", { companyId: runtime.companyId, error: String(err) }),
       );
     }
 
@@ -507,7 +659,8 @@ const plugin = definePlugin({
         : null;
       if (anchorKey) {
         const anchor = (await ctx.state.get({
-          scopeKind: "instance",
+          scopeKind: "company",
+          scopeId: event.companyId,
           stateKey: anchorKey,
         })) as { messageId: number; messageThreadId?: number } | null;
         // Only thread when targeting the same topic — Telegram rejects cross-topic replies.
@@ -519,17 +672,27 @@ const plugin = definePlugin({
       const messageId = await sendMessage(ctx, token, chatId, msg.text, msg.options);
 
       if (messageId) {
+        const messageMapping = {
+          entityId: event.entityId,
+          entityType: event.entityType,
+          companyId: event.companyId,
+          eventType: event.eventType,
+        };
+
+        await ctx.state.set(
+          {
+            scopeKind: "company",
+            scopeId: event.companyId,
+            stateKey: `msg_${chatId}_${messageId}`,
+          },
+          messageMapping,
+        );
         await ctx.state.set(
           {
             scopeKind: "instance",
             stateKey: `msg_${chatId}_${messageId}`,
           },
-          {
-            entityId: event.entityId,
-            entityType: event.entityType,
-            companyId: event.companyId,
-            eventType: event.eventType,
-          },
+          messageMapping,
         );
 
         await ctx.activity.log({
@@ -543,12 +706,13 @@ const plugin = definePlugin({
         // same entity reply to this one. Never overwritten — the first message stays root.
         if (anchorKey) {
           const existing = (await ctx.state.get({
-            scopeKind: "instance",
+            scopeKind: "company",
+            scopeId: event.companyId,
             stateKey: anchorKey,
           })) as { messageId: number; messageThreadId?: number } | null;
           if (!existing) {
             await ctx.state.set(
-              { scopeKind: "instance", stateKey: anchorKey },
+              { scopeKind: "company", scopeId: event.companyId, stateKey: anchorKey },
               { messageId, messageThreadId },
             );
           }
@@ -556,7 +720,7 @@ const plugin = definePlugin({
       }
     };
 
-    if (config.notifyOnIssueCreated) {
+    {
       ctx.events.on("issue.created", async (event: PluginEvent) => {
         const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
         if (!effectiveConfig.notifyOnIssueCreated) return;
@@ -564,7 +728,7 @@ const plugin = definePlugin({
       });
     }
 
-    if (config.notifyOnIssueDone) {
+    {
       const doneDedupe = makeUpdateDedupe();
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
         const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
@@ -595,7 +759,7 @@ const plugin = definePlugin({
       });
     }
 
-    if (config.notifyOnIssueAssigned) {
+    {
       const assignmentDedupe = makeUpdateDedupe();
 
       ctx.events.on("issue.updated", async (event: PluginEvent) => {
@@ -639,7 +803,7 @@ const plugin = definePlugin({
       });
     }
 
-    if (config.notifyOnApprovalCreated) {
+    {
       ctx.events.on("approval.created", async (event: PluginEvent) => {
         const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
         if (!effectiveConfig.notifyOnApprovalCreated) return;
@@ -687,7 +851,7 @@ const plugin = definePlugin({
       });
     }
 
-    if (config.notifyOnAgentError) {
+    {
       const agentErrorDedupe = makeUpdateDedupe(AGENT_ERROR_DEDUPLICATION_WINDOW_MS, 1000);
       ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
         const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
@@ -732,19 +896,35 @@ const plugin = definePlugin({
       }
     };
 
-    if (config.notifyOnAgentRunStarted) {
+    const enrichRunIssue = async (event: PluginEvent) => {
+      const payload = event.payload as Record<string, unknown>;
+      if (payload.issueId && !payload.issueIdentifier) {
+        try {
+          const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
+          if (issue?.identifier) payload.issueIdentifier = issue.identifier;
+        } catch { /* best effort */ }
+      }
+    };
+
+    {
       ctx.events.on("agent.run.started", async (event: PluginEvent) => {
         const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnAgentRunStarted) return;
+        if (!effectiveConfig.notifyOnAgentRunStarted) {
+          return;
+        }
         await enrichAgentName(event);
+        await enrichRunIssue(event);
         await notify(event, formatAgentRunStarted);
       });
     }
-    if (config.notifyOnAgentRunFinished) {
+    {
       ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
         const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnAgentRunFinished) return;
+        if (!effectiveConfig.notifyOnAgentRunFinished) {
+          return;
+        }
         await enrichAgentName(event);
+        await enrichRunIssue(event);
         await notify(event, formatAgentRunFinished);
       });
     }
@@ -773,133 +953,126 @@ const plugin = definePlugin({
     });
 
     // --- Daily digest job ---
+    ctx.jobs.register("telegram-daily-digest", async (job) => {
+      const scheduledAt = job.scheduledAt ? new Date(job.scheduledAt) : new Date();
+      const manualRun = job.trigger === "manual";
+      const companies = await ctx.companies.list();
+      for (const company of companies) {
+        const effectiveConfig = await resolveConfig(ctx, config, company.id);
+        const effectiveDigestMode = resolveDigestMode(effectiveConfig);
+        if (effectiveDigestMode === "off") continue;
 
-    // Support legacy dailyDigestEnabled boolean
-    const effectiveDigestMode = (config as Record<string, unknown>).dailyDigestEnabled === true && config.digestMode === "off"
-      ? "daily"
-      : config.digestMode ?? "off";
+        const digestSlot = resolveDigestSlot(effectiveConfig, scheduledAt);
+        if (!manualRun && !digestSlot) continue;
 
-    if (effectiveDigestMode !== "off") {
-      ctx.jobs.register("telegram-daily-digest", async () => {
-        // Check if current UTC hour matches a configured digest time
-        const nowHour = new Date().getUTCHours();
-        const nowMin = new Date().getUTCMinutes();
-        if (nowMin >= 5) return; // only fire within first 5 min of the hour
-
-        const parseHour = (t: string) => {
-          const [h] = (t || "").split(":");
-          return parseInt(h ?? "", 10);
-        };
-        const firstHour = parseHour(config.dailyDigestTime);
-        const secondHour = parseHour(config.bidailySecondTime);
-        const tridailyHours = (config.tridailyTimes || "07:00,13:00,19:00")
-          .split(",")
-          .map((t) => parseHour(t.trim()));
-
-        let shouldSend = false;
-        if (effectiveDigestMode === "daily") {
-          shouldSend = nowHour === firstHour;
-        } else if (effectiveDigestMode === "bidaily") {
-          shouldSend = nowHour === firstHour || nowHour === secondHour;
-        } else if (effectiveDigestMode === "tridaily") {
-          shouldSend = tridailyHours.includes(nowHour);
+        let sentKey: string | null = null;
+        if (!manualRun && digestSlot) {
+          sentKey = `digest_sent_${digestSlot.dateKey}_${digestSlot.timeKey}`;
+          const alreadySent = await ctx.state.get({
+            scopeKind: "company",
+            scopeId: company.id,
+            stateKey: sentKey,
+          });
+          if (alreadySent) continue;
         }
-        if (!shouldSend) return;
 
-        const companies = await ctx.companies.list();
-        for (const company of companies) {
-          const effectiveConfig = await resolveConfig(ctx, config, company.id);
-          const token = await resolveTelegramBotToken(ctx, effectiveConfig, company.id);
-          if (!token) continue;
-          const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
-          const chatId = await resolveChat(ctx, company.id, effectiveConfig.digestChatId || effectiveConfig.defaultChatId);
-          if (!chatId) continue;
+        const token = await resolveTelegramBotToken(ctx, effectiveConfig, company.id);
+        if (!token) continue;
+        const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
+        const chatId = await resolveChat(ctx, company.id, effectiveConfig.digestChatId || effectiveConfig.defaultChatId);
+        if (!chatId) continue;
 
-          try {
-            const agents = await ctx.agents.list({ companyId: company.id });
-            const activeAgents = agents.filter((a: Agent) => a.status === "active");
-            const issues = await ctx.issues.list({ companyId: company.id, limit: 50 });
+        try {
+          const agents = await ctx.agents.list({ companyId: company.id });
+          const activeAgents = agents.filter((a: Agent) => a.status === "active");
+          const issues = await ctx.issues.list({ companyId: company.id, limit: 50 });
 
-            const now = Date.now();
-            const oneDayMs = 24 * 60 * 60 * 1000;
-            const completedToday = issues.filter((i: Issue) =>
-              i.status === "done" && i.completedAt && (now - new Date(i.completedAt).getTime()) < oneDayMs
-            );
-            const createdToday = issues.filter((i: Issue) =>
-              (now - new Date(i.createdAt).getTime()) < oneDayMs
-            );
+          const now = Date.now();
+          const oneDayMs = 24 * 60 * 60 * 1000;
+          const completedToday = issues.filter((i: Issue) =>
+            i.status === "done" && i.completedAt && (now - new Date(i.completedAt).getTime()) < oneDayMs
+          );
+          const createdToday = issues.filter((i: Issue) =>
+            (now - new Date(i.createdAt).getTime()) < oneDayMs
+          );
 
-            const issuePrefix = company.issuePrefix;
-            const inProgress = issues.filter((i: Issue) => i.status === "in_progress");
-            const inReview = issues.filter((i: Issue) => i.status === "in_review");
-            const blocked = issues.filter((i: Issue) => i.status === "blocked");
+          const issuePrefix = company.issuePrefix;
+          const inProgress = issues.filter((i: Issue) => i.status === "in_progress");
+          const inReview = issues.filter((i: Issue) => i.status === "in_review");
+          const blocked = issues.filter((i: Issue) => i.status === "blocked");
 
-            const dateStr = new Date().toISOString().split("T")[0];
-            const companyLabel = company.name ? ` \\- ${escapeMarkdownV2(company.name)}` : "";
-            const digestLabel = effectiveDigestMode === "bidaily" ? "Digest" : "Daily Digest";
-            const lines = [
-              escapeMarkdownV2("\ud83d\udcca") + ` *${escapeMarkdownV2(digestLabel)}${companyLabel} \\- ${escapeMarkdownV2(dateStr!)}*`,
-              "",
-              `${escapeMarkdownV2("\u2705")} Tasks completed: *${completedToday.length}*`,
-              `${escapeMarkdownV2("\ud83d\udccb")} Tasks created: *${createdToday.length}*`,
-              `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
-            ];
+          const dateStr = scheduledAt.toISOString().split("T")[0];
+          const companyLabel = company.name ? ` \\- ${escapeMarkdownV2(company.name)}` : "";
+          const digestLabel = effectiveDigestMode === "bidaily" ? "Digest" : "Daily Digest";
+          const lines = [
+            escapeMarkdownV2("\ud83d\udcca") + ` *${escapeMarkdownV2(digestLabel)}${companyLabel} \\- ${escapeMarkdownV2(dateStr!)}*`,
+            "",
+            `${escapeMarkdownV2("\u2705")} Tasks completed: *${completedToday.length}*`,
+            `${escapeMarkdownV2("\ud83d\udccb")} Tasks created: *${createdToday.length}*`,
+            `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
+          ];
 
-            if (activeAgents.length > 0) {
-              const topAgent = activeAgents[0]!.name;
-              lines.push(`${escapeMarkdownV2("\u2b50")} Top performer: *${escapeMarkdownV2(topAgent)}*`);
-            }
-
-            const formatIssueItem = (i: Issue) => {
-              const id = i.identifier ?? i.id;
-              const idText = issuePrefix
-                ? `[${escapeMarkdownV2(id)}](${effectivePublicUrl}/${issuePrefix}/issues/${id})`
-                : escapeMarkdownV2(id);
-              return `  ${idText} \\- ${escapeMarkdownV2(i.title)}`;
-            };
-
-            if (inProgress.length > 0) {
-              lines.push("", `${escapeMarkdownV2("\ud83d\udd04")} *In Progress \\(${inProgress.length}\\)*`);
-              for (const i of inProgress.slice(0, 10)) lines.push(formatIssueItem(i));
-            }
-            if (inReview.length > 0) {
-              lines.push("", `${escapeMarkdownV2("\ud83d\udd0d")} *In Review \\(${inReview.length}\\)*`);
-              for (const i of inReview.slice(0, 10)) lines.push(formatIssueItem(i));
-            }
-            if (blocked.length > 0) {
-              lines.push("", `${escapeMarkdownV2("\ud83d\udeab")} *Blocked \\(${blocked.length}\\)*`);
-              for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
-            }
-
-            const digestThreadId = await resolveDigestThreadId(ctx, token, chatId, effectiveConfig.digestTopicId);
-
-            await sendMessage(ctx, token, chatId, lines.join("\n"), {
-              parseMode: "MarkdownV2",
-              messageThreadId: digestThreadId,
-            });
-          } catch (err) {
-            ctx.logger.error("Daily digest failed for company", { companyId: company.id, error: String(err) });
-            const text = [
-              escapeMarkdownV2("\ud83d\udcca") + " *Daily Digest*",
-              "",
-              escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
-            ].join("\n");
-
-            const errorThreadId = await resolveDigestThreadId(
-              ctx,
-              token,
-              chatId,
-              effectiveConfig.errorsTopicId || effectiveConfig.digestTopicId,
-            );
-
-            await sendMessage(ctx, token, chatId, text, {
-              parseMode: "MarkdownV2",
-              messageThreadId: errorThreadId,
-            });
+          if (activeAgents.length > 0) {
+            const topAgent = activeAgents[0]!.name;
+            lines.push(`${escapeMarkdownV2("\u2b50")} Top performer: *${escapeMarkdownV2(topAgent)}*`);
           }
+
+          const formatIssueItem = (i: Issue) => {
+            const id = i.identifier ?? i.id;
+            const idText = issuePrefix
+              ? `[${escapeMarkdownV2(id)}](${effectivePublicUrl}/${issuePrefix}/issues/${id})`
+              : escapeMarkdownV2(id);
+            return `  ${idText} \\- ${escapeMarkdownV2(i.title)}`;
+          };
+
+          if (inProgress.length > 0) {
+            lines.push("", `${escapeMarkdownV2("\ud83d\udd04")} *In Progress \\(${inProgress.length}\\)*`);
+            for (const i of inProgress.slice(0, 10)) lines.push(formatIssueItem(i));
+          }
+          if (inReview.length > 0) {
+            lines.push("", `${escapeMarkdownV2("\ud83d\udd0d")} *In Review \\(${inReview.length}\\)*`);
+            for (const i of inReview.slice(0, 10)) lines.push(formatIssueItem(i));
+          }
+          if (blocked.length > 0) {
+            lines.push("", `${escapeMarkdownV2("\ud83d\udeab")} *Blocked \\(${blocked.length}\\)*`);
+            for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
+          }
+
+          const digestThreadId = await resolveDigestThreadId(ctx, token, chatId, effectiveConfig.digestTopicId);
+
+          await sendMessage(ctx, token, chatId, lines.join("\n"), {
+            parseMode: "MarkdownV2",
+            messageThreadId: digestThreadId,
+          });
+
+          if (sentKey) {
+            await ctx.state.set(
+              { scopeKind: "company", scopeId: company.id, stateKey: sentKey },
+              { sentAt: new Date().toISOString(), jobRunId: job.runId },
+            );
+          }
+        } catch (err) {
+          ctx.logger.error("Daily digest failed for company", { companyId: company.id, error: String(err) });
+          const text = [
+            escapeMarkdownV2("\ud83d\udcca") + " *Daily Digest*",
+            "",
+            escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
+          ].join("\n");
+
+          const errorThreadId = await resolveDigestThreadId(
+            ctx,
+            token,
+            chatId,
+            effectiveConfig.errorsTopicId || effectiveConfig.digestTopicId,
+          );
+
+          await sendMessage(ctx, token, chatId, text, {
+            parseMode: "MarkdownV2",
+            messageThreadId: errorThreadId,
+          });
         }
-      });
-    }
+      }
+    });
 
     // --- Phase 1: Escalation support ---
     const escalationManager = new EscalationManager();
@@ -1088,9 +1261,14 @@ const plugin = definePlugin({
     // --- Phase 1: Escalation timeout checker job ---
     ctx.jobs.register("check-escalation-timeouts", async () => {
       try {
-        const token = await resolveTelegramBotToken(ctx, config);
-        if (!token) return;
-        await escalationManager.checkTimeouts(ctx, token);
+        const runtimes = await resolveCompanyRuntimes(
+          ctx,
+          config,
+          (effectiveConfig) => Boolean(effectiveConfig.enableInbound || effectiveConfig.escalationChatId),
+        );
+        for (const runtime of runtimes) {
+          await escalationManager.checkTimeouts(ctx, runtime.token, runtime.companyId);
+        }
       } catch (err) {
         ctx.logger.error("Escalation timeout check failed", { error: String(err) });
       }
@@ -1099,12 +1277,17 @@ const plugin = definePlugin({
     // --- Phase 5: Watch checker job ---
     ctx.jobs.register("check-watches", async () => {
       try {
-        const token = await resolveTelegramBotToken(ctx, config);
-        if (!token) return;
-        await checkWatches(ctx, token, {
-          maxSuggestionsPerHourPerCompany: config.maxSuggestionsPerHourPerCompany ?? 10,
-          watchDeduplicationWindowMs: config.watchDeduplicationWindowMs ?? 86400000,
-        });
+        const runtimes = await resolveCompanyRuntimes(
+          ctx,
+          config,
+          (effectiveConfig) => (effectiveConfig.maxSuggestionsPerHourPerCompany ?? 10) > 0,
+        );
+        for (const runtime of runtimes) {
+          await checkWatches(ctx, runtime.token, {
+            maxSuggestionsPerHourPerCompany: runtime.config.maxSuggestionsPerHourPerCompany ?? 10,
+            watchDeduplicationWindowMs: runtime.config.watchDeduplicationWindowMs ?? 86400000,
+          }, runtime.companyId);
+        }
       } catch (err) {
         ctx.logger.error("Watch check failed", { error: String(err) });
       }
@@ -1225,9 +1408,11 @@ async function handleUpdate(
   }
 
   if (config.enableInbound && msg.reply_to_message?.from?.is_bot) {
+    const companyId = await resolveCompanyId(ctx, chatId);
     const replyToId = msg.reply_to_message.message_id;
     const mapping = await ctx.state.get({
-      scopeKind: "instance",
+      scopeKind: "company",
+      scopeId: companyId,
       stateKey: `msg_${chatId}_${replyToId}`,
     }) as { entityId: string; entityType: string; companyId: string } | null;
 
@@ -1279,6 +1464,7 @@ async function handleCallbackQuery(
   const actor = query.from.username ?? query.from.first_name ?? String(query.from.id);
   const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
   const messageId = query.message?.message_id;
+  const originalMessageText = query.message?.text?.trim() ?? "";
 
   if (data.startsWith("approve_")) {
     const approvalId = data.replace("approve_", "");
@@ -1306,8 +1492,7 @@ async function handleCallbackQuery(
           token,
           chatId,
           messageId,
-          `${escapeMarkdownV2("\u2705")} *Approved* by ${escapeMarkdownV2(actor)}`,
-          { parseMode: "MarkdownV2" },
+          formatApprovalDecisionMessage("approved", actor, originalMessageText, approvalId),
         );
       }
     } catch (err) {
@@ -1361,8 +1546,7 @@ async function handleCallbackQuery(
           token,
           chatId,
           messageId,
-          `${escapeMarkdownV2("\u274c")} *Rejected* by ${escapeMarkdownV2(actor)}`,
-          { parseMode: "MarkdownV2" },
+          formatApprovalDecisionMessage("rejected", actor, originalMessageText, approvalId),
         );
       }
     } catch (err) {
@@ -1386,6 +1570,22 @@ async function handleCallbackQuery(
   }
 
   await answerCallbackQuery(ctx, token, query.id, "Unknown action");
+}
+
+function formatApprovalDecisionMessage(
+  decision: "approved" | "rejected",
+  actor: string,
+  originalMessageText: string,
+  approvalId: string,
+): string {
+  const status = decision === "approved" ? "✅ Approved" : "❌ Rejected";
+  const body = stripApprovalDecisionPrefix(originalMessageText).trim();
+  const fallbackBody = `Approval ID: ${approvalId}`;
+  return `${status} by ${actor}\n${body || fallbackBody}`;
+}
+
+function stripApprovalDecisionPrefix(text: string): string {
+  return text.replace(/^(?:✅ Approved|❌ Rejected) by [^\n]*\n*/u, "");
 }
 
 runWorker(plugin, import.meta.url);
