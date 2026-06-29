@@ -108,6 +108,7 @@ describe("handleCommand", () => {
   });
 
   it("routes /issues command", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     await handleCommand(ctx, "token", "123", "issues", "");
     expect(sentMessages.length).toBe(1);
@@ -115,6 +116,7 @@ describe("handleCommand", () => {
   });
 
   it("routes /agents command", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     await handleCommand(ctx, "token", "123", "agents", "");
     expect(sentMessages.length).toBe(1);
@@ -154,6 +156,17 @@ describe("handleCommand", () => {
     expect(metricsWritten.some(m => m.name === "telegram_commands_handled")).toBe(true);
   });
 
+  it("never uses chatId as companyId when chat is not linked (regression: BEL-183 spam-loop)", async () => {
+    const ctx = mockCtx();
+    // No stateStore entry for chat_5851857072 — simulates an unlinked group chat
+    await handleCommand(ctx, "token", "5851857072", "status", "");
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].text).toContain("Make sure this chat is linked");
+    // The raw chatId must never reach the API as a companyId
+    expect(ctx.agents.list).not.toHaveBeenCalledWith(expect.objectContaining({ companyId: "5851857072" }));
+    expect(ctx.issues.list).not.toHaveBeenCalledWith(expect.objectContaining({ companyId: "5851857072" }));
+  });
+
   it("/connect stores company mapping", async () => {
     const ctx = mockCtx();
     (ctx.companies as unknown) = {
@@ -172,12 +185,14 @@ describe("handleCommand", () => {
   });
 
   it("/issues filters by project name", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     await handleCommand(ctx, "token", "123", "issues", "Backend");
     expect(sentMessages[0].text).toContain("PROJ\\-2");
   });
 
   it("/agents shows agent names and status", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     await handleCommand(ctx, "token", "123", "agents", "");
     expect(sentMessages[0].text).toContain("Builder");
@@ -191,6 +206,7 @@ describe("handleCommand", () => {
   });
 
   it("/create creates issue then updates assignee and status to trigger wake", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     (ctx.agents as unknown) = {
       list: vi.fn().mockResolvedValue([
@@ -225,6 +241,7 @@ describe("handleCommand", () => {
   });
 
   it("/create attaches the issue to the project mapped to the current forum topic", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     stateStore["topic-map-123"] = { "Setup and Tests": "58" };
     const ctx = mockCtx();
     (ctx.agents as unknown) = {
@@ -243,7 +260,7 @@ describe("handleCommand", () => {
 
     expect(ctx.issues.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        companyId: "123",
+        companyId: "co-1",
         title: "Topic scoped task",
         projectId: issueProjectId,
       }),
@@ -252,6 +269,7 @@ describe("handleCommand", () => {
   });
 
   it("/create works without a CEO agent", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     (ctx.agents as unknown) = {
       list: vi.fn().mockResolvedValue([
@@ -282,6 +300,7 @@ describe("handleCommand", () => {
 
 describe("handleConnectTopic", () => {
   it("stores topic mapping for a project", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "Backend 42");
     expect(stateStore["topic-map-123"]).toEqual({
@@ -290,6 +309,7 @@ describe("handleConnectTopic", () => {
   });
 
   it("uses the current forum topic when no explicit topic id is provided", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "Setup and Tests", 58);
     expect(stateStore["topic-map-123"]).toEqual({
@@ -303,7 +323,16 @@ describe("handleConnectTopic", () => {
     expect(sentMessages[0].text).toContain("Usage");
   });
 
+  it("sends a friendly error when chat is not linked to a company", async () => {
+    const ctx = mockCtx();
+    await handleConnectTopic(ctx, "token", "5851857072", "Backend 42");
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].text).toContain("not linked");
+    expect(stateStore["topic-map-5851857072"]).toBeUndefined();
+  });
+
   it("appends to existing topic map", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     stateStore["topic-map-123"] = { Frontend: "10" };
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "Backend 42");
@@ -314,6 +343,7 @@ describe("handleConnectTopic", () => {
   });
 
   it("rejects unknown projects without storing a topic mapping", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "Unknown Project 42");
     expect(stateStore["topic-map-123"]).toBeUndefined();
@@ -321,6 +351,7 @@ describe("handleConnectTopic", () => {
   });
 
   it("replaces a legacy mapping with the canonical project name", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
     stateStore["topic-map-123"] = { backend: "41" };
     const ctx = mockCtx();
     await handleConnectTopic(ctx, "token", "123", "backend 42");

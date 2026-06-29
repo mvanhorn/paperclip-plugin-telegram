@@ -331,7 +331,11 @@ async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<str
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
   }) as { companyId?: string; companyName?: string } | null;
-  return mapping?.companyId ?? mapping?.companyName ?? chatId;
+  const companyId = mapping?.companyId ?? mapping?.companyName;
+  if (!companyId) {
+    throw new Error("This chat is not linked to a Paperclip company. Use /connect first.");
+  }
+  return companyId;
 }
 
 const plugin = definePlugin({
