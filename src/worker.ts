@@ -52,6 +52,7 @@ import { validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import { loadStartupConfig, resolveCompatibleConfig } from "./config-compat.js";
+import { resolveStartupTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -147,6 +148,8 @@ type TelegramBoardAccessState = {
 type TelegramBoardAccessRegistration = TelegramBoardAccessState & {
   configured: boolean;
 };
+
+let runtimeHealth: TelegramRuntimeHealth = { status: "ok" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -535,6 +538,9 @@ const plugin = definePlugin({
       (effectiveConfig) => Boolean(effectiveConfig.enableCommands || effectiveConfig.enableInbound),
     );
     if (pollingRuntimes.length === 0) {
+      await resolveStartupTelegramBotToken(ctx, config.telegramBotTokenRef, (health) => {
+        runtimeHealth = health;
+      });
       ctx.logger.warn("No company-scoped Telegram bot token is resolvable during startup; setup will continue without polling");
     }
 
@@ -1354,7 +1360,7 @@ const plugin = definePlugin({
   },
 
   async onHealth(): Promise<PluginHealthDiagnostics> {
-    return { status: "ok" };
+    return runtimeHealth;
   },
 });
 
