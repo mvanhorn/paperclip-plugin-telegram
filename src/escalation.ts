@@ -344,7 +344,7 @@ export class EscalationManager {
     });
   }
 
-  async checkTimeouts(ctx: PluginContext, token: string): Promise<void> {
+  async checkTimeouts(ctx: PluginContext, token: string, companyId?: string): Promise<void> {
     const pendingIds = (await ctx.state.get({
       scopeKind: "instance",
       stateKey: "escalation_pending_ids",
@@ -364,6 +364,7 @@ export class EscalationManager {
         await this.removePending(ctx, escalationId);
         continue;
       }
+      if (companyId && stored.companyId !== companyId) continue;
 
       const timeoutAt = new Date(stored.timeoutAt).getTime();
       if (now < timeoutAt) continue;

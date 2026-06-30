@@ -41,6 +41,24 @@ const manifest: PaperclipPluginManifestV1 = {
     worker: "./dist/worker.js",
     ui: "./dist/ui",
   },
+  instanceConfigSchema: {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      telegramBotTokenRef: {
+        type: "string",
+        format: "secret-ref",
+      },
+      paperclipBoardApiTokenRef: {
+        type: "string",
+        format: "secret-ref",
+      },
+      transcriptionApiKeyRef: {
+        type: "string",
+        format: "secret-ref",
+      },
+    },
+  },
   ui: {
     slots: [
       {
@@ -55,8 +73,8 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "telegram-daily-digest",
       displayName: "Telegram Digest",
-      description: "Send a summary of agent activity to Telegram (daily or bidaily).",
-      schedule: "0 * * * *",
+      description: "Send a summary of agent activity to Telegram (daily, bidaily, or tridaily).",
+      schedule: "* * * * *",
     },
     {
       jobKey: "check-escalation-timeouts",

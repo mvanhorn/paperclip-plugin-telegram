@@ -72,10 +72,17 @@ type OutputQueueEntry = {
 
 export function setupAcpOutputListener(
   ctx: PluginContext,
-  token: string,
+  resolveToken: (event: { companyId: string }) => Promise<string | null>,
 ): void {
   ctx.events.on(ACP_OUTPUT_EVENT, async (event) => {
     const payload = event.payload as AcpOutputEvent;
+    const token = await resolveToken(event);
+    if (!token) {
+      ctx.logger.warn("Skipping ACP output because Telegram bot token could not be resolved", {
+        companyId: event.companyId,
+      });
+      return;
+    }
     await handleAcpOutput(ctx, token, payload);
   });
 }
