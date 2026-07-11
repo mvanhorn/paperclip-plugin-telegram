@@ -24,7 +24,7 @@
     "@paperclipai/plugin-sdk": "^2026.318.0",
     "@paperclipai/shared": "^2026.318.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
+    "vitest": "^3.2.6",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.8",
     "react": "^19.2.5",
