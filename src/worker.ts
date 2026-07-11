@@ -50,6 +50,7 @@ import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist
 import { validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
+import { resolveStartupTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -145,6 +146,8 @@ type TelegramBoardAccessState = {
 type TelegramBoardAccessRegistration = TelegramBoardAccessState & {
   configured: boolean;
 };
+
+let runtimeHealth: TelegramRuntimeHealth = { status: "ok" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -365,7 +368,14 @@ const plugin = definePlugin({
       return;
     }
 
-    const token = await ctx.secrets.resolve(config.telegramBotTokenRef);
+    const token = await resolveStartupTelegramBotToken(ctx, config.telegramBotTokenRef, (health) => {
+      runtimeHealth = health;
+    });
+    if (!token) {
+      ctx.logger.warn("Telegram plugin runtime disabled because bot token could not be resolved");
+      return;
+    }
+    const telegramToken = token;
 
     // --- Register bot commands with Telegram ---
     if (config.enableCommands) {
@@ -410,7 +420,7 @@ const plugin = definePlugin({
             lastUpdateId = await processTelegramUpdateBatch({
               updates: data.result,
               lastUpdateId,
-              handleUpdate: (update) => handleUpdate(ctx, token, config, update, baseUrl, publicUrl),
+              handleUpdate: (update) => handleUpdate(ctx, telegramToken, config, update, baseUrl, publicUrl),
               persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
               logger: ctx.logger,
             });
@@ -1069,7 +1079,7 @@ const plugin = definePlugin({
   },
 
   async onHealth(): Promise<PluginHealthDiagnostics> {
-    return { status: "ok" };
+    return runtimeHealth;
   },
 });
 
