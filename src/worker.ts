@@ -338,6 +338,19 @@ async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<str
   return companyId;
 }
 
+// Non-throwing variant for handleUpdate call sites. A throw escaping
+// handleUpdate prevents the polling offset from advancing, so the same
+// update is re-fetched and re-thrown forever — the poller wedges for every
+// chat. Unlinked chats must degrade per-path instead (friendly reply for
+// commands, skip for media/thread routing).
+async function resolveCompanyIdOrNull(ctx: PluginContext, chatId: string): Promise<string | null> {
+  try {
+    return await resolveCompanyId(ctx, chatId);
+  } catch {
+    return null;
+  }
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     const rawConfig = await ctx.config.get();
@@ -1083,7 +1096,7 @@ const plugin = definePlugin({
   },
 });
 
-async function handleUpdate(
+export async function handleUpdate(
   ctx: PluginContext,
   token: string,
   config: TelegramConfig,
@@ -1119,14 +1132,18 @@ async function handleUpdate(
   // Phase 3: Handle media messages
   const hasMedia = !!(msg.voice || msg.audio || msg.video_note || msg.document || msg.photo);
   if (hasMedia) {
-    const companyId = await resolveCompanyId(ctx, chatId);
-    const handled = await handleMediaMessage(ctx, token, msg as Parameters<typeof handleMediaMessage>[2], {
-      briefAgentId: config.briefAgentId ?? "",
-      briefAgentChatIds: config.briefAgentChatIds ?? [],
-      transcriptionApiKeyRef: config.transcriptionApiKeyRef ?? "",
-      publicUrl,
-    }, companyId);
-    if (handled) return;
+    const companyId = await resolveCompanyIdOrNull(ctx, chatId);
+    if (companyId) {
+      const handled = await handleMediaMessage(ctx, token, msg as Parameters<typeof handleMediaMessage>[2], {
+        briefAgentId: config.briefAgentId ?? "",
+        briefAgentChatIds: config.briefAgentChatIds ?? [],
+        transcriptionApiKeyRef: config.transcriptionApiKeyRef ?? "",
+        publicUrl,
+      }, companyId);
+      if (handled) return;
+    } else {
+      ctx.logger.debug("Ignoring media message from unlinked chat", { chatId });
+    }
   }
 
   if (!msg.text) return;
@@ -1137,10 +1154,14 @@ async function handleUpdate(
   if (threadId) {
     const isCommand = text.startsWith("/");
     if (!isCommand) {
-      const companyId = await resolveCompanyId(ctx, chatId);
-      const replyToId = msg.reply_to_message?.message_id;
-      const routed = await routeMessageToAgent(ctx, token, chatId, threadId, text, replyToId, companyId);
-      if (routed) return;
+      const companyId = await resolveCompanyIdOrNull(ctx, chatId);
+      if (companyId) {
+        const replyToId = msg.reply_to_message?.message_id;
+        const routed = await routeMessageToAgent(ctx, token, chatId, threadId, text, replyToId, companyId);
+        if (routed) return;
+      } else {
+        ctx.logger.debug("Not routing thread message from unlinked chat", { chatId });
+      }
     }
   }
 
@@ -1149,7 +1170,9 @@ async function handleUpdate(
     const fullCommand = text.slice(botCommand.offset, botCommand.offset + botCommand.length);
     const command = fullCommand.replace(/^\//, "").replace(/@.*$/, "");
     const args = text.slice(botCommand.offset + botCommand.length).trim();
-    const companyId = await resolveCompanyId(ctx, chatId);
+    // undefined on unlinked chats: /connect and /help still work, and the
+    // company-scoped handlers answer with their "not linked" guidance.
+    const companyId = (await resolveCompanyIdOrNull(ctx, chatId)) ?? undefined;
 
     // Phase 4: Check custom commands first
     if (command === "commands") {

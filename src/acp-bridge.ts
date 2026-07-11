@@ -94,6 +94,11 @@ export async function handleAcpCommand(
   const parts = args.trim().split(/\s+/);
   const subcommand = parts[0]?.toLowerCase() ?? "";
 
+  if (!companyId && (subcommand === "spawn" || subcommand === "cancel" || subcommand === "close")) {
+    await sendMessage(ctx, token, chatId, "This chat is not linked to a Paperclip company. Use /connect first.", { messageThreadId });
+    return;
+  }
+
   switch (subcommand) {
     case "spawn":
       await handleAcpSpawn(ctx, token, chatId, parts.slice(1).join(" "), messageThreadId, companyId, maxAgentsPerThread);
