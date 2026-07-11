@@ -96,6 +96,11 @@ export async function handleCommandsCommand(
   const parts = args.trim().split(/\s+/);
   const subcommand = parts[0]?.toLowerCase() ?? "";
 
+  if (!companyId && ["list", "import", "delete", "run"].includes(subcommand)) {
+    await sendMessage(ctx, token, chatId, "This chat is not linked to a Paperclip company. Use /connect first.", { messageThreadId });
+    return;
+  }
+
   switch (subcommand) {
     case "list":
       await listCommands(ctx, token, chatId, messageThreadId, companyId);
@@ -133,14 +138,17 @@ export async function tryCustomCommand(
 ): Promise<boolean> {
   if (BUILTIN_COMMANDS.has(command)) return false;
 
-  const resolvedCompanyId = companyId ?? chatId;
-  const commands = await getCommandRegistry(ctx, resolvedCompanyId);
+  // Unlinked chat: never fall back to chatId as a companyId. Returning false
+  // lets the built-in command path answer with its "not linked" guidance.
+  if (!companyId) return false;
+
+  const commands = await getCommandRegistry(ctx, companyId);
   const cmd = commands.find((c) => c.name === command);
 
   if (!cmd) return false;
 
   const args = argsStr.trim().split(/\s+/).filter(Boolean);
-  await executeWorkflow(ctx, token, chatId, cmd, args, messageThreadId, resolvedCompanyId);
+  await executeWorkflow(ctx, token, chatId, cmd, args, messageThreadId, companyId);
   return true;
 }
 
