@@ -51,7 +51,11 @@ import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist
 import { validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
-import { resolveStartupTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
+import {
+  SECRET_RESOLUTION_DISABLED_MESSAGE,
+  SECRET_RESOLUTION_ISSUE_URL,
+  type TelegramRuntimeHealth,
+} from "./runtime-token.js";
 import { loadStartupConfig, resolveCompatibleConfig } from "./config-compat.js";
 
 type TelegramConfig = {
@@ -167,18 +171,6 @@ async function resolveConfig(
   return resolveCompatibleConfig(ctx, fallback as unknown as Record<string, unknown>, companyId) as Promise<TelegramConfig>;
 }
 
-async function resolveTelegramBotToken(
-  ctx: PluginContext,
-  config: TelegramConfig,
-  companyId?: string | null,
-): Promise<string | undefined> {
-  const effectiveConfig = companyId ? await resolveConfig(ctx, config, companyId) : config;
-  if (!effectiveConfig.telegramBotTokenRef) return undefined;
-  return resolveStartupTelegramBotToken(ctx, effectiveConfig.telegramBotTokenRef, (health) => {
-    runtimeHealth = health;
-  });
-}
-
 function normalizeBoardAccessState(value: unknown): TelegramBoardAccessState {
   const record = isRecord(value) ? value : {};
   return {
@@ -284,6 +276,14 @@ async function resolveTelegramBotTokenRef(
     const resolveSecret = ctx.secrets.resolve as (secretRef: string, companyId?: string | null) => Promise<string>;
     return await resolveSecret(tokenRef, companyId);
   } catch (err) {
+    runtimeHealth = {
+      status: "degraded",
+      message: SECRET_RESOLUTION_DISABLED_MESSAGE,
+      details: {
+        issue: "paperclip-plugin-secret-resolution-disabled",
+        reference: SECRET_RESOLUTION_ISSUE_URL,
+      },
+    };
     ctx.logger.warn("Failed to resolve Telegram bot token secret", {
       companyId,
       error: String(err),
