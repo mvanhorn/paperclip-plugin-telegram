@@ -421,6 +421,11 @@ const plugin = definePlugin({
               description: data.description,
               error_code: data.error_code,
             });
+            // ok:false (revoked token/401, 409 conflict, 429) returns immediately
+            // rather than honoring timeout=10, and fetch does not throw on non-2xx,
+            // so without this the loop spins hot — flooding logs and hammering
+            // Telegram. Back off 5s, mirroring the catch block below.
+            await new Promise((r) => setTimeout(r, 5000));
           }
         } catch (err) {
           ctx.logger.error("Telegram polling error", { error: String(err) });
