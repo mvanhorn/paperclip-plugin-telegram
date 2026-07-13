@@ -418,8 +418,10 @@ const plugin = definePlugin({
     let lastUpdateId = await getPersistedTelegramUpdateOffset(ctx);
 
     async function pollUpdates(): Promise<void> {
+      ctx.logger.info("Telegram polling loop starting");
       while (pollingActive) {
         try {
+          ctx.logger.debug("Telegram poll tick", { lastUpdateId });
           const res = await ctx.http.fetch(
             `${TELEGRAM_API}/bot${token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
             { method: "GET" },
@@ -427,6 +429,8 @@ const plugin = definePlugin({
           const data = (await res.json()) as {
             ok: boolean;
             result?: TelegramUpdate[];
+            description?: string;
+            error_code?: number;
           };
 
           if (data.ok && data.result) {
@@ -437,18 +441,34 @@ const plugin = definePlugin({
               persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
               logger: ctx.logger,
             });
+          } else {
+            ctx.logger.warn("Telegram getUpdates: unexpected response", {
+              ok: data.ok,
+              hasResult: !!data.result,
+              description: data.description,
+              error_code: data.error_code,
+            });
+            // ok:false (revoked token/401, 409 conflict, 429) returns immediately
+            // rather than honoring timeout=10, and fetch does not throw on non-2xx,
+            // so without this the loop spins hot — flooding logs and hammering
+            // Telegram. Back off 5s, mirroring the catch block below.
+            await new Promise((r) => setTimeout(r, 5000));
           }
         } catch (err) {
           ctx.logger.error("Telegram polling error", { error: String(err) });
           await new Promise((r) => setTimeout(r, 5000));
         }
       }
+      ctx.logger.warn("Telegram polling loop exited", { pollingActive });
     }
 
     if (config.enableCommands || config.enableInbound) {
+      ctx.logger.info("Dispatching pollUpdates() fire-and-forget");
       pollUpdates().catch((err) =>
         ctx.logger.error("Polling loop crashed", { error: String(err) }),
       );
+    } else {
+      ctx.logger.warn("Telegram polling NOT started — both enableCommands and enableInbound are false");
     }
 
     ctx.events.on("plugin.stopping", async () => {
