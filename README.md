@@ -28,8 +28,8 @@ This is that plugin.
 - **Issue created** - Title, description, status, priority, assignee, project fields, and a "View Issue" link
 - **Issue done** - Completion confirmation with status fields
 - **Approval requested** - Interactive **Approve** and **Reject** inline buttons. Click to act without leaving Telegram.
-- **Agent error** - Error message with warning indicator
-- **Agent run started/finished** - Lifecycle notifications
+- **Agent error** - Error message with warning indicator and human-readable agent label
+- **Agent run started/finished** - Optional lifecycle notifications, disabled by default to avoid chat spam
 
 ### Interactive approvals
 - Approve/reject inline buttons on every approval notification
@@ -194,6 +194,9 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 | `enableCommands` | No | Enable bot commands (default: true) |
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
 | `onlyNotifyBoardApprovals` | No | When enabled, send Telegram approval notifications only for `request_board_approval` approvals |
+| `notifyOnAgentError` | No | Send agent failure notifications (default: true) |
+| `notifyOnAgentRunStarted` | No | Send agent run-start lifecycle notifications (default: false) |
+| `notifyOnAgentRunFinished` | No | Send agent run-finish lifecycle notifications (default: false) |
 | `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. Empty means any user is allowed |
 | `allowedTelegramChatIds` | No | Optional allowlist of Telegram chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
