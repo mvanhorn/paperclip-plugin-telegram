@@ -56,15 +56,6 @@ function runButton(agentId: string, runId: string | null, publicUrl?: string): {
   return null;
 }
 
-function runIdLine(runId: string): string {
-  return `${esc("run_id")}: ${code(runId)}`;
-}
-
-function issueRunLabel(payload: Payload): string | null {
-  const identifier = payload.issueIdentifier ?? payload.identifier;
-  return identifier ? String(identifier) : null;
-}
-
 function classifyAgentError(errorMessage: string): string {
   if (/timed?\s*out|timeout/i.test(errorMessage)) return "Agent Timeout";
   if (/limit|rate.?limit|quota/i.test(errorMessage)) return "Agent Rate Limit";
@@ -266,8 +257,7 @@ export function formatAgentRunStarted(event: PluginEvent, opts?: IssueLinksOpts)
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);
   const agentName = String(p.agentName ?? agentId);
-  const runId = String(p.runId ?? event.entityId);
-  const issueLabel = issueRunLabel(p);
+  const runId = p.runId ? String(p.runId) : null;
 
   const buttons: Array<{ text: string; url: string }> = [];
   if (opts?.baseUrl && isExternalUrl(opts.baseUrl)) {
@@ -278,10 +268,7 @@ export function formatAgentRunStarted(event: PluginEvent, opts?: IssueLinksOpts)
   }
 
   return {
-    text: [
-      `${esc("▶️")} ${bold(agentName)} ${esc("started a new run")}${issueLabel ? ` ${bold(issueLabel)}` : ""}`,
-      runIdLine(runId),
-    ].join("\n"),
+    text: `${esc("▶️")} ${bold(agentName)} ${esc("started a new run")}`,
     options: {
       parseMode: "MarkdownV2",
       disableNotification: true,
@@ -294,8 +281,7 @@ export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);
   const agentName = String(p.agentName ?? agentId);
-  const runId = String(p.runId ?? event.entityId);
-  const issueLabel = issueRunLabel(p);
+  const runId = p.runId ? String(p.runId) : null;
 
   const buttons: Array<{ text: string; url: string }> = [];
   if (opts?.baseUrl && isExternalUrl(opts.baseUrl)) {
@@ -306,10 +292,7 @@ export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts
   }
 
   return {
-    text: [
-      `${esc("⏹️")} ${bold(agentName)} ${esc("completed successfully")}${issueLabel ? ` ${bold(issueLabel)}` : ""}`,
-      runIdLine(runId),
-    ].join("\n"),
+    text: `${esc("⏹️")} ${bold(agentName)} ${esc("completed successfully")}`,
     options: {
       parseMode: "MarkdownV2",
       disableNotification: true,

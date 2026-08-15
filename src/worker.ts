@@ -236,8 +236,10 @@ async function resolveBoardApiToken(
     if (seen.has(candidate.ref)) continue;
     seen.add(candidate.ref);
     try {
-      const resolveSecret = ctx.secrets.resolve as (secretRef: string, companyId?: string | null) => Promise<string>;
-      return await resolveSecret(candidate.ref, companyId);
+      return await ctx.secrets.resolve(candidate.ref, {
+        companyId: companyId ?? undefined,
+        configPath: candidate.source === "config" ? "paperclipBoardApiTokenRef" : undefined,
+      });
     } catch (err) {
       ctx.logger.warn("Failed to resolve board API token secret", {
         source: candidate.source,
@@ -273,8 +275,10 @@ async function resolveTelegramBotTokenRef(
   }
 
   try {
-    const resolveSecret = ctx.secrets.resolve as (secretRef: string, companyId?: string | null) => Promise<string>;
-    return await resolveSecret(tokenRef, companyId);
+    return await ctx.secrets.resolve(tokenRef, {
+      companyId,
+      configPath: "telegramBotTokenRef",
+    });
   } catch (err) {
     runtimeHealth = {
       status: "degraded",
@@ -317,10 +321,7 @@ async function resolveCompanyRuntimes(
   for (const company of companies) {
     let scopedConfig: Record<string, unknown>;
     try {
-      const getConfig = ctx.config.get as unknown as (
-        params?: { companyId?: string | null },
-      ) => Promise<Record<string, unknown>>;
-      scopedConfig = await getConfig({ companyId: company.id });
+      scopedConfig = await ctx.config.get(company.id);
     } catch (err) {
       ctx.logger.warn("Company-scoped Telegram plugin config unavailable; skipping company runtime", {
         companyId: company.id,

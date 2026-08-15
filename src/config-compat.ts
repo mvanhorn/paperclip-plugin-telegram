@@ -33,10 +33,7 @@ export async function resolveCompatibleConfig<T extends Record<string, unknown>>
   companyId?: string | null,
 ): Promise<T> {
   try {
-    const getConfig = ctx.config.get as unknown as (
-      params?: { companyId?: string | null },
-    ) => Promise<Record<string, unknown>>;
-    const scopedConfig = await getConfig(companyId ? { companyId } : undefined);
+    const scopedConfig = await ctx.config.get(companyId ?? undefined);
     return { ...fallback, ...scopedConfig } as T;
   } catch (err) {
     logConfigFallback(
