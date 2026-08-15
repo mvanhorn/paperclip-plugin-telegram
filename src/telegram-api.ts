@@ -11,14 +11,6 @@ type InlineButton = {
 
 type InlineKeyboard = InlineButton[][];
 
-async function writeMetric(ctx: PluginContext, name: string, value: number): Promise<void> {
-  try {
-    await ctx.metrics.write(name, value);
-  } catch (err) {
-    ctx.logger.warn("Telegram metric write failed", { error: String(err), metric: name });
-  }
-}
-
 export type SendMessageOptions = {
   parseMode?: "MarkdownV2" | "HTML";
   replyToMessageId?: number;
@@ -52,7 +44,7 @@ export async function sendMessage(
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
+      const res = await ctx.http.fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -83,15 +75,15 @@ export async function sendMessage(
           });
         }
         ctx.logger.error("Telegram sendMessage failed", { error: data.description });
-        await writeMetric(ctx, METRIC_NAMES.failed, 1);
+        await ctx.metrics.write(METRIC_NAMES.failed, 1);
         return null;
       }
 
-      await writeMetric(ctx, METRIC_NAMES.sent, 1);
+      await ctx.metrics.write(METRIC_NAMES.sent, 1);
       return data.result?.message_id ?? null;
     } catch (err) {
       ctx.logger.error("Telegram API error", { error: String(err) });
-      await writeMetric(ctx, METRIC_NAMES.failed, 1);
+      await ctx.metrics.write(METRIC_NAMES.failed, 1);
       return null;
     }
   }

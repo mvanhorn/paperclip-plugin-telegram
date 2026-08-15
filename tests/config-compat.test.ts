@@ -39,8 +39,8 @@ describe("loadStartupConfig", () => {
 
 describe("resolveCompatibleConfig", () => {
   it("uses company-scoped config when Paperclip supports it", async () => {
-    const ctx = createContext(async (params) => (
-      params && typeof params === "object" && "companyId" in params
+    const ctx = createContext(async (companyId) => (
+      companyId === "company-1"
         ? { defaultChatId: "company-chat" }
         : { defaultChatId: "global-chat" }
     ));

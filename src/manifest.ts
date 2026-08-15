@@ -73,8 +73,8 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "telegram-daily-digest",
       displayName: "Telegram Digest",
-      description: "Send a summary of agent activity to Telegram (daily, bidaily, or tridaily).",
-      schedule: "* * * * *",
+      description: "Send a summary of agent activity to Telegram (daily or bidaily).",
+      schedule: "0 * * * *",
     },
     {
       jobKey: "check-escalation-timeouts",
