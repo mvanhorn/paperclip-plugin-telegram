@@ -615,7 +615,17 @@ async function resolveCompanyIdOrNull(ctx: PluginContext, chatId: string): Promi
 
 const plugin = definePlugin({
   async setup(ctx) {
-    const rawConfig = await loadStartupConfig(ctx, {} as Record<string, unknown>);
+    // Resolve the company BEFORE loading config. An unscoped ctx.config.get()
+    // fails from setup() on scope-enforcing hosts, and the silent fallback to
+    // defaults leaves paperclipBoardApiTokenRef unset — which surfaces much
+    // later, and intermittently, as a bare 403 from whatever needed the board
+    // token. Knowing the company up front turns that into a scoped retry.
+    const startupCompanies = await listCompaniesForStartup(ctx);
+    const rawConfig = await loadStartupConfig(
+      ctx,
+      {} as Record<string, unknown>,
+      startupCompanies[0]?.id ?? null,
+    );
     ctx.logger.info("Telegram plugin config loaded");
     const config = rawConfig as unknown as TelegramConfig;
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";

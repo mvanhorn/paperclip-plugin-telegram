@@ -23,7 +23,7 @@ describe("loadStartupConfig", () => {
     });
   });
 
-  it("falls back to defaults when startup config cannot load", async () => {
+  it("falls back to defaults when startup config cannot load and no fallback company id is given", async () => {
     const ctx = createContext(async () => {
       throw new Error("config unavailable");
     });
@@ -33,6 +33,38 @@ describe("loadStartupConfig", () => {
     expect(ctx.logger.warn).toHaveBeenCalledWith(
       "Failed to load Telegram plugin config; using defaults",
       expect.objectContaining({ companyId: null }),
+    );
+  });
+
+  it("retries with the fallback company id when the unscoped call fails for lack of company context", async () => {
+    // Regression: on hosts that enforce per-invocation company scoping,
+    // ctx.config.get() with no companyId fails from setup() with "company
+    // context is required" every single time. Without this retry, the plugin
+    // silently runs on defaults forever — paperclipBoardApiTokenRef stays
+    // empty and board access looks broken even though the token is fine.
+    const ctx = createContext(async (companyId?: string) => {
+      if (!companyId) throw new Error("company context is required");
+      return companyId === "co-fallback" ? { defaultChatId: "company-chat" } : {};
+    });
+    const fallback = { telegramBotTokenRef: "global-secret", defaultChatId: "" };
+
+    await expect(loadStartupConfig(ctx, fallback, "co-fallback")).resolves.toEqual({
+      telegramBotTokenRef: "global-secret",
+      defaultChatId: "company-chat",
+    });
+    expect(ctx.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to defaults when both the unscoped and the scoped retry fail", async () => {
+    const ctx = createContext(async () => {
+      throw new Error("company context is required");
+    });
+    const fallback = { telegramBotTokenRef: "global-secret" };
+
+    await expect(loadStartupConfig(ctx, fallback, "co-fallback")).resolves.toEqual(fallback);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      "Failed to load Telegram plugin config; using defaults",
+      expect.objectContaining({ companyId: "co-fallback" }),
     );
   });
 });
