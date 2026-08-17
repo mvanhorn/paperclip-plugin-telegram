@@ -41,7 +41,12 @@ import {
   persistTelegramUpdateOffset,
   processTelegramUpdateBatch,
 } from "./polling-offset.js";
-import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
+import {
+  handleCommandsCommand,
+  tryCustomCommand,
+  isWorkflowApprovalCallback,
+  resolveWorkflowApprovalCallback,
+} from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
@@ -1271,6 +1276,14 @@ async function handleCallbackQuery(
   const actor = query.from.username ?? query.from.first_name ?? String(query.from.id);
   const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
   const messageId = query.message?.message_id;
+
+  // Must precede the "approve_" branch below only by intent, not by necessity:
+  // these are "cmd_approve_"/"cmd_reject_" and cannot collide with it. Kept
+  // adjacent so the two approval flows are read together.
+  if (isWorkflowApprovalCallback(data)) {
+    await resolveWorkflowApprovalCallback(ctx, token, data, query.id, actor, messageId);
+    return;
+  }
 
   if (data.startsWith("approve_")) {
     const approvalId = data.replace("approve_", "");
