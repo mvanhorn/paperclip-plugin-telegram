@@ -310,12 +310,66 @@ type TelegramPollingRuntimeGroup = {
   runtimes: TelegramCompanyRuntime[];
 };
 
+/**
+ * Enumerate companies for startup, tolerating hosts where `companies.list` is
+ * not callable from setup(). Falls back to the company id recorded in the
+ * board-access state, which is written when board access is connected.
+ */
+async function listCompaniesForStartup(ctx: PluginContext): Promise<Array<{ id: string }>> {
+  let listed: Array<{ id: string }> = [];
+  let listError: unknown = null;
+  try {
+    listed = await ctx.companies.list();
+  } catch (err) {
+    listError = err;
+  }
+
+  // An empty array is the common case, not the exception: on this host
+  // companies.list SUCCEEDS from setup() and returns [], because there is no
+  // invocation scope to enumerate companies against. Treating only a thrown
+  // error as failure leaves runtimes empty and silently disables polling.
+  if (listed.length > 0) return listed;
+
+  let fallbackCompanyId: string | null = null;
+  try {
+    fallbackCompanyId = (await loadBoardAccessState(ctx)).companyId;
+  } catch {
+    // board-access state is optional; absence just means no fallback
+  }
+
+  if (!fallbackCompanyId) {
+    ctx.logger.warn("companies.list yielded no companies at startup and no fallback company id is known", {
+      error: listError ? String(listError) : "empty result",
+    });
+    return [];
+  }
+
+  ctx.logger.info("companies.list yielded no companies at startup; using the company id from board-access state", {
+    companyId: fallbackCompanyId,
+    reason: listError ? String(listError) : "empty result",
+  });
+  return [{ id: fallbackCompanyId }];
+}
+
 async function resolveCompanyRuntimes(
   ctx: PluginContext,
   startupConfig: TelegramConfig,
   predicate: (config: TelegramConfig) => boolean,
 ): Promise<TelegramCompanyRuntime[]> {
-  const companies = await ctx.companies.list();
+  // `ctx.companies.list()` is the natural way to enumerate companies, but it is
+  // not reliable from setup(): on hosts that enforce per-invocation scoping it
+  // can fail with "the worker referenced a missing, expired, or unknown
+  // invocation scope" (paperclipai/paperclip#9368, #11163). setup() runs
+  // outside any host-issued invocation, and the failure is order-dependent —
+  // an earlier failed host call makes the next one fail this way.
+  //
+  // When that happens the runtime list comes back empty and long polling is
+  // never started, so every inbound feature (commands, reply routing,
+  // approve/reject) is silently dead for the worker's life — there is no retry.
+  //
+  // Discovery is not actually required: the company is already known from the
+  // stored board-access state. Fall back to it rather than lose inbound.
+  const companies = await listCompaniesForStartup(ctx);
   const runtimes: TelegramCompanyRuntime[] = [];
 
   for (const company of companies) {
