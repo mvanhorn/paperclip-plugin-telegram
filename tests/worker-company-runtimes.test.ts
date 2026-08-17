@@ -169,6 +169,25 @@ describe("resolveCompanyRuntimes (config merge + company-runtime resolution)", (
     expect(runtimes).toEqual([]);
   });
 
+  it("uses a pre-fetched companies list instead of re-deriving it, when one is passed in", async () => {
+    // setup() resolves listCompaniesForStartup once (to seed loadStartupConfig's
+    // fallback) and should pass that same list through here rather than
+    // triggering a second companies.list()/board-access lookup for one startup.
+    configByCompany = {
+      "co-1": { telegramBotTokenRef: "ref-1", defaultChatId: "company-chat" },
+    };
+    const companiesList = vi.fn().mockResolvedValue([{ id: "co-should-not-be-used" }]);
+    const ctx = mockCtx({
+      companies: { list: companiesList, get: vi.fn() } as unknown as PluginContext["companies"],
+    });
+
+    const runtimes = await resolveCompanyRuntimes(ctx, startupConfig, () => true, [{ id: "co-1" }]);
+
+    expect(runtimes).toHaveLength(1);
+    expect(runtimes[0].companyId).toBe("co-1");
+    expect(companiesList).not.toHaveBeenCalled();
+  });
+
   it("excludes a company whose scoped routing values are identical to startup's (no real per-company override)", async () => {
     // hasCompanyTelegramRoute requires at least one routing key to differ from
     // the startup value. A company that echoes back the same blank/startup

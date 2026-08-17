@@ -377,6 +377,7 @@ export async function resolveCompanyRuntimes(
   ctx: PluginContext,
   startupConfig: TelegramConfig,
   predicate: (config: TelegramConfig) => boolean,
+  prefetchedCompanies?: Array<{ id: string }>,
 ): Promise<TelegramCompanyRuntime[]> {
   // `ctx.companies.list()` is the natural way to enumerate companies, but it is
   // not reliable from setup(): on hosts that enforce per-invocation scoping it
@@ -391,7 +392,11 @@ export async function resolveCompanyRuntimes(
   //
   // Discovery is not actually required: the company is already known from the
   // stored board-access state. Fall back to it rather than lose inbound.
-  const companies = await listCompaniesForStartup(ctx);
+  //
+  // A caller that already resolved the list this startup (setup() does, to
+  // seed loadStartupConfig's fallback) passes it through instead of triggering
+  // a second companies.list()/board-access lookup for the same startup.
+  const companies = prefetchedCompanies ?? (await listCompaniesForStartup(ctx));
   const runtimes: TelegramCompanyRuntime[] = [];
 
   for (const company of companies) {
@@ -652,6 +657,7 @@ const plugin = definePlugin({
       ctx,
       config,
       (effectiveConfig) => Boolean(effectiveConfig.enableCommands || effectiveConfig.enableInbound),
+      startupCompanies,
     );
     if (pollingRuntimes.length === 0) {
       ctx.logger.warn("No company-scoped Telegram bot token is resolvable during startup; setup will continue without polling");
