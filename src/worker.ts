@@ -216,9 +216,9 @@ function getBoardAccessRegistration(
  * /help would be wasteful — the cost of that optimisation is this coupling, so
  * it is asserted in tests.
  */
-const BOARD_TOKEN_COMMANDS = new Set(["approve", "decisions"]);
+export const BOARD_TOKEN_COMMANDS = new Set(["approve", "decisions"]);
 
-async function resolveBoardApiToken(
+export async function resolveBoardApiToken(
   ctx: PluginContext,
   config: TelegramConfig,
   companyId?: string | null,
@@ -337,7 +337,7 @@ type TelegramPollingRuntimeGroup = {
  * not callable from setup(). Falls back to the company id recorded in the
  * board-access state, which is written when board access is connected.
  */
-async function listCompaniesForStartup(ctx: PluginContext): Promise<Array<{ id: string }>> {
+export async function listCompaniesForStartup(ctx: PluginContext): Promise<Array<{ id: string }>> {
   let listed: Array<{ id: string }> = [];
   let listError: unknown = null;
   try {

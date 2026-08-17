@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
@@ -22,9 +23,10 @@
   },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "^2026.722.0",
-    "@paperclipai/shared": "^2026.707.0",
+    "@paperclipai/shared": "^2026.722.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.8",
+    "@vitest/coverage-v8": "^3.2.7",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "typescript": "^5.7.0",
