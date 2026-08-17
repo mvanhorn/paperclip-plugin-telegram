@@ -140,6 +140,25 @@ describe("resolveCompanyRuntimes (config merge + company-runtime resolution)", (
     expect(runtimes[0].baseUrl).toBe("http://startup-base");
   });
 
+  it("defaults omitted enable flags to true so a company remains pollable", async () => {
+    configByCompany = {
+      "co-1": { telegramBotTokenRef: "ref-1", defaultChatId: "company-chat" },
+    };
+    const ctx = mockCtx({
+      companies: { list: vi.fn().mockResolvedValue([{ id: "co-1" }]), get: vi.fn() } as unknown as PluginContext["companies"],
+    });
+
+    const runtimes = await resolveCompanyRuntimes(
+      ctx,
+      startupConfig,
+      (config) => Boolean(config.enableCommands || config.enableInbound),
+    );
+
+    expect(runtimes).toHaveLength(1);
+    expect(runtimes[0].config.enableCommands).toBe(true);
+    expect(runtimes[0].config.enableInbound).toBe(true);
+  });
+
   it("excludes a company when the predicate rejects its effective config", async () => {
     configByCompany = {
       "co-1": { telegramBotTokenRef: "ref-1", defaultChatId: "company-chat", enableCommands: false, enableInbound: false },

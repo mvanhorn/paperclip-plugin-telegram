@@ -50,7 +50,7 @@ import {
   finalizeReplyRejection,
   isInteractionReplyMapping,
 } from "./interaction-answers.js";
-import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.js";
+import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, DEFAULT_CONFIG, METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
@@ -418,7 +418,7 @@ export async function resolveCompanyRuntimes(
     }
     if (!("telegramBotTokenRef" in scopedConfig)) continue;
 
-    const effectiveConfig = { ...startupConfig, ...scopedConfig } as unknown as TelegramConfig;
+    const effectiveConfig = { ...DEFAULT_CONFIG, ...startupConfig, ...scopedConfig } as unknown as TelegramConfig;
     const hasCompanyTelegramRoute = [
       "telegramBotTokenRef",
       "defaultChatId",
@@ -634,7 +634,7 @@ const plugin = definePlugin({
     const startupCompanies = await listCompaniesForStartup(ctx);
     const rawConfig = await loadStartupConfig(
       ctx,
-      {} as Record<string, unknown>,
+      DEFAULT_CONFIG as unknown as Record<string, unknown>,
       startupCompanies[0]?.id ?? null,
     );
     ctx.logger.info("Telegram plugin config loaded");
