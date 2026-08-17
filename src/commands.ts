@@ -108,14 +108,23 @@ async function handleStatus(
   try {
     const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const agents = await ctx.agents.list({ companyId });
-    const activeAgents = agents.filter((a: Agent) => a.status === "active");
+    // Agents report "running" or "idle" (and "paused"/"error" when unavailable).
+    // Counting `status === "active"` matched nothing, so this line always read
+    // "0/N" no matter how many agents were working.
+    const running = agents.filter((a: Agent) => a.status === "running" || a.status === "active");
+    const unavailable = agents.filter((a: Agent) => a.status === "paused" || a.status === "error");
     const issues = await ctx.issues.list({ companyId, limit: 10 });
     const doneIssues = issues.filter((i: Issue) => i.status === "done");
+
+    const agentLine =
+      `${escapeMarkdownV2("🤖")} Agents: *${running.length}* running, ` +
+      `*${escapeMarkdownV2(String(agents.length - unavailable.length))}* available` +
+      (unavailable.length > 0 ? escapeMarkdownV2(` (${unavailable.length} paused/error)`) : "");
 
     const lines = [
       escapeMarkdownV2("📊") + " *Paperclip Status*",
       "",
-      `${escapeMarkdownV2("🤖")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
+      agentLine,
       `${escapeMarkdownV2("📋")} Recent issues: *${escapeMarkdownV2(String(issues.length))}* \\(${escapeMarkdownV2(String(doneIssues.length))} done\\)`,
     ];
 
