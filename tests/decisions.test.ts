@@ -43,6 +43,7 @@ const {
   renderAttentionItem,
   describeSourceKind,
   describeDecisionsError,
+  toAttentionItem,
 } = await import("../src/decisions.js");
 
 function makeCtx(): PluginContext {
@@ -292,6 +293,33 @@ describe("sendAttentionList — inline answering (BLA-154)", () => {
     expect(answerableSendCalls[0]!.interaction).toMatchObject({ kind: "request_confirmation" });
   });
 
+  it("keeps the Open link for an interaction that was answered since the feed was read", async () => {
+    // The /attention feed is a snapshot. Between reading it and fetching the
+    // interaction, someone can answer it in the web UI. Offering buttons for it
+    // anyway invites an answer the host will reject, and the user is told
+    // nothing about why — so a non-pending status must fall back to the link.
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "answered",
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{ id: "q1", prompt: "Which?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] }],
+      },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+  });
+
   it("keeps the Open link for an interaction kind Telegram cannot render as buttons", async () => {
     fetchedInteraction = { id: "921ee29e", status: "pending", kind: "suggest_tasks", payload: { version: 1 } };
     const items = [toItem(questionItem)];
@@ -344,6 +372,34 @@ describe("sendAttentionList — inline answering (BLA-154)", () => {
     expect(answerableSendCalls).toHaveLength(0);
   });
 
+  it("honours inlineResolvable: false on an interaction, without even fetching it", async () => {
+    // The blocker_attention case above is also screened out by its sourceKind,
+    // so it cannot prove this flag is read. An interaction the host declined to
+    // mark inline-resolvable is the only case where inlineResolvable is the
+    // deciding guard: the host's verdict wins, and we do not spend a fetch
+    // second-guessing it.
+    const notInlineInteraction = { ...questionItem, inlineResolvable: false };
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{ id: "q1", prompt: "Which?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] }],
+      },
+    };
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items: [toItem(notInlineInteraction)], totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+  });
+
   it("does not attempt an inline answer for non-interaction items, even when inlineResolvable", async () => {
     const approvalItem = {
       ...toItem(blockerItem),
@@ -393,28 +449,8 @@ describe("describeSourceKind", () => {
 });
 
 // Round-trips a raw fixture through the real parser so render tests exercise
-// the same mapping the fetch path produces.
-function toItem(raw: Record<string, unknown>) {
-  const subject = (raw.subject ?? {}) as Record<string, unknown>;
-  const relatedIssue = (raw.relatedIssue ?? {}) as Record<string, unknown>;
-  const detail = raw.detail as Record<string, unknown> | undefined;
-  const subjectMetadata = (subject.metadata ?? {}) as Record<string, unknown>;
-  const isInteraction = raw.sourceKind === "issue_thread_interaction";
-  return {
-    id: String(raw.id),
-    sourceKind: String(raw.sourceKind),
-    title: String(subject.title),
-    issueIdentifier: relatedIssue.identifier as string | undefined,
-    issueHref: subject.href as string | undefined,
-    whyNow: raw.whyNow as string | undefined,
-    severity: raw.severity as string | undefined,
-    excerpt: (detail?.firstQuestionText ?? detail?.promptExcerpt) as string | undefined,
-    verbs: Array.isArray(raw.decisionVerbs)
-      ? (raw.decisionVerbs as Array<{ label: string }>).map((v) => v.label)
-      : [],
-    inlineResolvable: raw.inlineResolvable === true,
-    interactionId: isInteraction ? (subject.id as string | undefined) : undefined,
-    issueId: isInteraction ? (subjectMetadata.issueId as string | undefined) : undefined,
-    interactionKind: isInteraction ? (subjectMetadata.kind as string | undefined) : undefined,
-  };
-}
+// the same mapping the fetch path produces. This MUST delegate rather than
+// re-derive: an earlier hand-copy of toAttentionItem kept these tests passing
+// while the production mapper was broken (a mutation that forced
+// `inlineResolvable: true` — offering blockers inline — went undetected).
+const toItem = toAttentionItem;

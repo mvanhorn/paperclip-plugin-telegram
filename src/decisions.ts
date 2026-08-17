@@ -100,7 +100,12 @@ function extractExcerpt(detail: Record<string, unknown> | undefined): string | u
   return undefined;
 }
 
-function toAttentionItem(raw: Record<string, unknown>): AttentionItem {
+/**
+ * Exported so tests can build fixtures through the real mapper. They used to
+ * keep a hand-copy of this function; it drifted into a second implementation
+ * that no longer failed when this one broke.
+ */
+export function toAttentionItem(raw: Record<string, unknown>): AttentionItem {
   const subject = (raw.subject ?? {}) as Record<string, unknown>;
   const relatedIssue = (raw.relatedIssue ?? {}) as Record<string, unknown>;
   const detail = raw.detail as Record<string, unknown> | undefined;
