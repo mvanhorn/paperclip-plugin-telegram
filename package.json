@@ -13,6 +13,7 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:mutations": "node scripts/mutation-check.mjs",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
