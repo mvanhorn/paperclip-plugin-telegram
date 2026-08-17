@@ -547,4 +547,16 @@ describe("BOT_COMMANDS", () => {
     expect(names).toContain("connect_topic");
     expect(names).toContain("topics");
   });
+
+  it("advertises /decisions, otherwise it is invisible in the / menu", () => {
+    // A command that works but is not registered may as well not exist: the
+    // only discovery path in Telegram is the menu this list populates.
+    expect(BOT_COMMANDS.map(c => c.command)).toContain("decisions");
+  });
+
+  it("no longer advertises /choose", () => {
+    // Removed deliberately: it duplicated /create and bypassed the org's own
+    // routing. Leaving it in the menu would keep offering a deleted handler.
+    expect(BOT_COMMANDS.map(c => c.command)).not.toContain("choose");
+  });
 });

@@ -448,6 +448,18 @@ async function executeStep(
       return "awaiting_approval";
     }
 
+    // NOTE: there is deliberately no "choice" step.
+    //
+    // A step that asks the user to pick and waits for the answer cannot work
+    // here: updates are processed strictly sequentially, so a workflow that
+    // blocks on a button press blocks the loop that would deliver it. The
+    // press can never arrive and the run stalls until it times out.
+    //
+    // `wait_approval` has the same defect today — its cmd_approve_* buttons are
+    // handled nowhere, so a workflow reaching it parks forever. Both need the
+    // workflow engine to persist its continuation and resume from a callback,
+    // which does not exist yet. /decisions shows the stateless pattern that
+    // does work: park the context, resolve it in the callback handler.
     case "set_state": {
       const key = interpolate(step.key);
       const value = interpolate(step.value);

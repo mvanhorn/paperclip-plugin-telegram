@@ -1,6 +1,7 @@
 import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
+import { fetchPendingInteractions, sendPendingList } from "./decisions.js";
 import { handleAcpCommand } from "./acp-bridge.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
@@ -20,6 +21,7 @@ type TopicMap = Record<string, TopicMappingValue>;
 
 export const BOT_COMMANDS: BotCommand[] = [
   { command: "create", description: "Create a new task (assigned to CEO agent)" },
+  { command: "decisions", description: "List decisions waiting on your input" },
   { command: "status", description: "Company health: active agents, open issues" },
   { command: "issues", description: "List open issues (optionally by project)" },
   { command: "agents", description: "List agents with current status" },
@@ -51,6 +53,9 @@ export async function handleCommand(
     case "create":
       await handleCreate(ctx, token, chatId, args, messageThreadId, publicUrl || baseUrl, companyId);
       break;
+    case "decisions":
+      await handleDecisions(ctx, token, chatId, messageThreadId, baseUrl, publicUrl, companyId, boardApiToken);
+      break;
     case "status":
       await handleStatus(ctx, token, chatId, messageThreadId, publicUrl, companyId);
       break;
@@ -63,11 +68,10 @@ export async function handleCommand(
     case "approve":
       await handleApprove(ctx, token, chatId, args, messageThreadId, baseUrl, boardApiToken);
       break;
-    // /start is Telegram's own entry point — the client shows it as a button on
-    // every new chat, so it is the first thing most users ever send. Without a
-    // case here it falls through to "Unknown command: /start", which is a poor
-    // first impression of the bot. Deliberately not added to BOT_COMMANDS:
-    // Telegram treats /start as implicit and listing it clutters the menu.
+    // /start is Telegram's own entry point — the button the client shows on
+    // every new chat, so it is the first thing a user ever sends. With no case
+    // here it fell through to "Unknown command: /start", which is the worst
+    // possible first impression. Answer it with the command list.
     case "start":
     case "help":
       await handleHelp(ctx, token, chatId, messageThreadId);
@@ -93,6 +97,45 @@ export async function handleCommand(
 
 function isExternalUrl(url?: string): boolean {
   return !!url && url.startsWith("https://");
+}
+
+/**
+ * /decisions — what is actually waiting on a human, from the decision queue
+ * behind the /<company>/decisions page.
+ *
+ * Distinct from /approve: an approval is a yes/no on one request, whereas a
+ * decision carries its own option set and applies effects when chosen.
+ */
+async function handleDecisions(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId?: number,
+  baseUrl: string = "http://localhost:3100",
+  publicUrl?: string,
+  resolvedCompanyId?: string,
+  boardApiToken?: string,
+): Promise<void> {
+  await sendChatAction(ctx, token, chatId);
+
+  try {
+    const companyId = resolvedCompanyId ?? (await resolveCompanyId(ctx, chatId));
+    const found = await fetchPendingInteractions(ctx, baseUrl, companyId, boardApiToken);
+    await sendPendingList(ctx, token, chatId, found, {
+      messageThreadId,
+      publicUrl: isExternalUrl(publicUrl) ? publicUrl : undefined,
+    });
+  } catch (err) {
+    // Board access is what makes the decision queue readable, so a 401/403
+    // here usually means it was never connected rather than a real outage.
+    await sendMessage(
+      ctx,
+      token,
+      chatId,
+      `Could not load decisions: ${err instanceof Error ? err.message : String(err)}`,
+      { messageThreadId },
+    );
+  }
 }
 
 async function handleStatus(

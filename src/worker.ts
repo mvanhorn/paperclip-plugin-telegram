@@ -206,6 +206,18 @@ function getBoardAccessRegistration(
   };
 }
 
+/**
+ * Commands that call board-only Paperclip endpoints and therefore need the
+ * board token resolved before the handler runs. Without it the request goes out
+ * unauthenticated and the user sees a bare 403 with no explanation.
+ *
+ * Keep this in step with the handlers that take a `boardApiToken` argument.
+ * It is a list rather than "always resolve" because resolving a secret on every
+ * /help would be wasteful — the cost of that optimisation is this coupling, so
+ * it is asserted in tests.
+ */
+const BOARD_TOKEN_COMMANDS = new Set(["approve", "decisions"]);
+
 async function resolveBoardApiToken(
   ctx: PluginContext,
   config: TelegramConfig,
@@ -1550,8 +1562,10 @@ export async function handleUpdate(
     const handledCustom = await tryCustomCommand(ctx, token, chatId, command, args, threadId, companyId);
     if (handledCustom) return;
 
-    // Built-in commands
-    const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, effectiveConfig, companyId) : undefined;
+    // Built-in commands.
+    const boardApiToken = BOARD_TOKEN_COMMANDS.has(command)
+      ? await resolveBoardApiToken(ctx, effectiveConfig, companyId)
+      : undefined;
     await handleCommand(ctx, token, chatId, command, args, threadId, effectiveBaseUrl, effectivePublicUrl, companyId, boardApiToken, effectiveConfig.maxAgentsPerThread);
     return;
   }
