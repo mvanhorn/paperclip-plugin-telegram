@@ -23,6 +23,20 @@ vi.mock("../src/paperclip-api.js", () => ({
   }),
 }));
 
+const answerableSendCalls: Array<{ chatId: string; interaction: unknown; opts: unknown }> = [];
+let fetchedInteraction: { id: string; status: string; kind: string; payload: unknown } | null = null;
+vi.mock("../src/interaction-answers.js", () => ({
+  fetchInteraction: vi.fn(async () => fetchedInteraction),
+  sendAnswerableInteraction: vi.fn(async (_ctx: unknown, _token: string, chatId: string, interaction: unknown, opts: unknown) => {
+    answerableSendCalls.push({ chatId, interaction, opts });
+    return true;
+  }),
+  isAskUserQuestionsAnswerable: (payload: { questions?: Array<{ options?: Array<{ freeText?: boolean }> }> }) =>
+    Array.isArray(payload?.questions) &&
+    payload.questions.length > 0 &&
+    payload.questions.every((q) => (q.options ?? []).every((o) => o.freeText !== true)),
+}));
+
 const {
   fetchAttention,
   sendAttentionList,
@@ -48,8 +62,10 @@ const questionItem = {
   sourceKind: "issue_thread_interaction",
   subject: {
     kind: "interaction",
+    id: "921ee29e",
     title: 'Who is "the first client" for BLA-76\'s discovery interviews?',
     href: "/BLA/issues/BLA-134#interaction-921ee29e",
+    metadata: { kind: "ask_user_questions", issueId: "issue-134" },
   },
   relatedIssue: { identifier: "BLA-134", title: "Confirm the first client" },
   whyNow: "Questions need answers on an issue thread.",
@@ -79,6 +95,8 @@ beforeEach(() => {
   apiCalls.length = 0;
   shouldThrow = null;
   response = { totalCount: 0, items: [] };
+  answerableSendCalls.length = 0;
+  fetchedInteraction = null;
 });
 
 describe("fetchAttention", () => {
@@ -187,6 +205,88 @@ describe("sendAttentionList", () => {
   });
 });
 
+describe("sendAttentionList — inline answering (BLA-154)", () => {
+  it("fetches the full interaction and sends an interactive prompt for a pick-only ask_user_questions item", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: { version: 1, questions: [{ id: "q1", prompt: "Who?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] }] },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).not.toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(1);
+    expect(answerableSendCalls[0]!.chatId).toBe("chat-1");
+    expect(answerableSendCalls[0]!.opts).toMatchObject({ issueId: "issue-134", companyId: "co-1" });
+  });
+
+  it("keeps the Open link and does not send a prompt when a question has a free-text option", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: { version: 1, questions: [{ id: "q1", prompt: "Who?", selectionMode: "single", options: [{ id: "o1", label: "Other", freeText: true }] }] },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("keeps the Open link when the interaction resolved elsewhere since the feed was read", async () => {
+    fetchedInteraction = { id: "921ee29e", status: "answered", kind: "ask_user_questions", payload: { version: 1, questions: [] } };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("does not attempt an inline answer for non-interaction items, even when inlineResolvable", async () => {
+    const approvalItem = {
+      ...toItem(blockerItem),
+      sourceKind: "approval",
+      inlineResolvable: true,
+    };
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items: [approvalItem], totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("does not fetch anything when no baseUrl is supplied", async () => {
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, { companyId: "co-1" });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+});
+
 describe("describeDecisionsError", () => {
   it("explains a 403 instead of dumping it", () => {
     const text = describeDecisionsError(
@@ -216,6 +316,8 @@ function toItem(raw: Record<string, unknown>) {
   const subject = (raw.subject ?? {}) as Record<string, unknown>;
   const relatedIssue = (raw.relatedIssue ?? {}) as Record<string, unknown>;
   const detail = raw.detail as Record<string, unknown> | undefined;
+  const subjectMetadata = (subject.metadata ?? {}) as Record<string, unknown>;
+  const isInteraction = raw.sourceKind === "issue_thread_interaction";
   return {
     id: String(raw.id),
     sourceKind: String(raw.sourceKind),
@@ -229,5 +331,8 @@ function toItem(raw: Record<string, unknown>) {
       ? (raw.decisionVerbs as Array<{ label: string }>).map((v) => v.label)
       : [],
     inlineResolvable: raw.inlineResolvable === true,
+    interactionId: isInteraction ? (subject.id as string | undefined) : undefined,
+    issueId: isInteraction ? (subjectMetadata.issueId as string | undefined) : undefined,
+    interactionKind: isInteraction ? (subjectMetadata.kind as string | undefined) : undefined,
   };
 }

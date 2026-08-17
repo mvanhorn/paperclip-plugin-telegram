@@ -62,6 +62,7 @@ export const METRIC_NAMES = {
   mediaProcessed: "telegram_media_processed",
   commandsExecuted: "telegram_custom_commands_executed",
   suggestionsEmitted: "telegram_suggestions_emitted",
+  interactionAnswered: "telegram_interaction_answers_submitted",
 } as const;
 
 // Cross-plugin ACP event names

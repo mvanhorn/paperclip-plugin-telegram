@@ -1,6 +1,14 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2 } from "./telegram-api.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
+import {
+  fetchInteraction,
+  sendAnswerableInteraction,
+  isAskUserQuestionsAnswerable,
+  type AnswerableInteraction,
+  type AskUserQuestionsPayload,
+  type RequestConfirmationPayload,
+} from "./interaction-answers.js";
 
 /**
  * What is actually waiting on a human, read from the same source the Decisions
@@ -36,6 +44,12 @@ export type AttentionItem = {
   excerpt?: string;
   verbs: string[];
   inlineResolvable: boolean;
+  // Only set for sourceKind === "issue_thread_interaction": the attention
+  // feed's excerpt has no question/option payload, so answering inline needs
+  // these to go fetch the full interaction from the issue it belongs to.
+  interactionId?: string;
+  issueId?: string;
+  interactionKind?: string;
 };
 
 export type AttentionResult = {
@@ -95,10 +109,13 @@ function toAttentionItem(raw: Record<string, unknown>): AttentionItem {
         .map((v) => (typeof v.label === "string" ? v.label : ""))
         .filter(Boolean)
     : [];
+  const sourceKind = typeof raw.sourceKind === "string" ? raw.sourceKind : "unknown";
+  const subjectMetadata = (subject.metadata ?? {}) as Record<string, unknown>;
+  const isInteraction = sourceKind === "issue_thread_interaction";
 
   return {
     id: typeof raw.id === "string" ? raw.id : "",
-    sourceKind: typeof raw.sourceKind === "string" ? raw.sourceKind : "unknown",
+    sourceKind,
     title: typeof subject.title === "string" ? subject.title : "(untitled)",
     issueIdentifier:
       typeof relatedIssue.identifier === "string" ? relatedIssue.identifier : undefined,
@@ -108,7 +125,39 @@ function toAttentionItem(raw: Record<string, unknown>): AttentionItem {
     excerpt: extractExcerpt(detail),
     verbs,
     inlineResolvable: raw.inlineResolvable === true,
+    interactionId: isInteraction && typeof subject.id === "string" ? subject.id : undefined,
+    issueId: isInteraction && typeof subjectMetadata.issueId === "string" ? subjectMetadata.issueId : undefined,
+    interactionKind: isInteraction && typeof subjectMetadata.kind === "string" ? subjectMetadata.kind : undefined,
   };
+}
+
+/**
+ * Fetch the full interaction and, if its shape is one Telegram can render as
+ * buttons, narrow it into an AnswerableInteraction. Returns null for anything
+ * that must fall back to the web-UI link: an unsupported kind, a fetch
+ * failure, an interaction that resolved since the feed was read, or (for
+ * ask_user_questions) a question with a designer-declared free-text option.
+ */
+async function tryBuildAnswerableInteraction(
+  ctx: PluginContext,
+  baseUrl: string,
+  item: AttentionItem,
+  boardApiToken?: string,
+): Promise<AnswerableInteraction | null> {
+  if (!item.issueId || !item.interactionId) return null;
+
+  const fresh = await fetchInteraction(ctx, baseUrl, item.issueId, item.interactionId, boardApiToken);
+  if (!fresh || fresh.status !== "pending") return null;
+
+  if (fresh.kind === "ask_user_questions") {
+    const payload = fresh.payload as AskUserQuestionsPayload;
+    if (!isAskUserQuestionsAnswerable(payload)) return null;
+    return { id: fresh.id, kind: "ask_user_questions", payload };
+  }
+  if (fresh.kind === "request_confirmation") {
+    return { id: fresh.id, kind: "request_confirmation", payload: fresh.payload as RequestConfirmationPayload };
+  }
+  return null;
 }
 
 /**
@@ -138,7 +187,11 @@ export async function fetchAttention(
   };
 }
 
-export function renderAttentionItem(item: AttentionItem, publicUrl?: string): string {
+export function renderAttentionItem(
+  item: AttentionItem,
+  publicUrl?: string,
+  opts: { includeOpenLink?: boolean } = {},
+): string {
   const heading = `${severityMarker(item.severity)} *${escapeMarkdownV2(item.title)}*`;
   const context = [describeSourceKind(item.sourceKind), item.issueIdentifier]
     .filter(Boolean)
@@ -161,7 +214,9 @@ export function renderAttentionItem(item: AttentionItem, publicUrl?: string): st
 
   // Deep-link to the item itself, not to the Decisions index — href already
   // carries the interaction anchor, so this lands on the thing being decided.
-  if (publicUrl && item.issueHref) {
+  // Suppressed when an inline answer prompt follows this message (BLA-154) —
+  // the link would just be a redundant way to do what the buttons already do.
+  if (opts.includeOpenLink !== false && publicUrl && item.issueHref) {
     lines.push("", escapeMarkdownV2(`Open: ${publicUrl}${item.issueHref}`));
   }
 
@@ -173,7 +228,14 @@ export async function sendAttentionList(
   token: string,
   chatId: string,
   found: AttentionResult,
-  opts: { messageThreadId?: number; publicUrl?: string; limit?: number } = {},
+  opts: {
+    messageThreadId?: number;
+    publicUrl?: string;
+    limit?: number;
+    baseUrl?: string;
+    companyId?: string;
+    boardApiToken?: string;
+  } = {},
 ): Promise<void> {
   const { items, totalCount } = found;
 
@@ -186,10 +248,26 @@ export async function sendAttentionList(
 
   const limit = opts.limit ?? DEFAULT_DISPLAY_LIMIT;
   for (const item of items.slice(0, limit)) {
-    await sendMessage(ctx, token, chatId, renderAttentionItem(item, opts.publicUrl), {
+    // Only issue_thread_interaction items are candidates — approvals,
+    // reviews, blockers etc. resolve through entirely different endpoints
+    // this plugin does not call (BLA-154's scope is ask_user_questions and
+    // request_confirmation specifically).
+    const answerable = item.sourceKind === "issue_thread_interaction" && item.inlineResolvable && opts.baseUrl
+      ? await tryBuildAnswerableInteraction(ctx, opts.baseUrl, item, opts.boardApiToken)
+      : null;
+
+    await sendMessage(ctx, token, chatId, renderAttentionItem(item, opts.publicUrl, { includeOpenLink: !answerable }), {
       parseMode: "MarkdownV2",
       messageThreadId: opts.messageThreadId,
     });
+
+    if (answerable && item.issueId) {
+      await sendAnswerableInteraction(ctx, token, chatId, answerable, {
+        issueId: item.issueId,
+        companyId: opts.companyId,
+        messageThreadId: opts.messageThreadId,
+      });
+    }
   }
 
   if (totalCount > limit) {

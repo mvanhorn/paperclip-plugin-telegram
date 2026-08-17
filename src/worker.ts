@@ -44,6 +44,12 @@ import {
 import { getTelegramUpdateChatId, selectTelegramRuntimeForUpdate } from "./polling-dispatch.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
+import {
+  isInteractionAnswerCallback,
+  resolveInteractionAnswerCallback,
+  finalizeReplyRejection,
+  isInteractionReplyMapping,
+} from "./interaction-answers.js";
 import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
@@ -1626,6 +1632,15 @@ export async function handleUpdate(
           error: String(err),
         });
       }
+    } else if (isInteractionReplyMapping(mapping)) {
+      // Replying to a confirmation prompt is the reason text for rejecting
+      // it — the button-less half of the accept/reject flow (BLA-154). See
+      // interaction-answers.ts for why rejection, not acceptance, needs this.
+      const effectiveConfig = await resolveConfig(ctx, config, companyId);
+      const effectiveBaseUrl = effectiveConfig.paperclipBaseUrl || baseUrl;
+      const boardApiToken = await resolveBoardApiToken(ctx, effectiveConfig, companyId);
+      await finalizeReplyRejection(ctx, token, effectiveBaseUrl, boardApiToken, mapping, text, chatId);
+      await ctx.metrics.write(METRIC_NAMES.inboundRouted, 1);
     }
   }
 }
@@ -1644,6 +1659,11 @@ async function handleCallbackQuery(
   const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
   const messageId = query.message?.message_id;
   const originalMessageText = query.message?.text?.trim() ?? "";
+
+  if (isInteractionAnswerCallback(data)) {
+    await resolveInteractionAnswerCallback(ctx, token, data, query.id, baseUrl, boardApiToken, messageId);
+    return;
+  }
 
   if (data.startsWith("approve_")) {
     const approvalId = data.replace("approve_", "");
