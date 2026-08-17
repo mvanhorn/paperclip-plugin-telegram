@@ -1,7 +1,7 @@
 import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
-import { fetchPendingInteractions, sendPendingList } from "./decisions.js";
+import { fetchAttention, sendAttentionList, describeDecisionsError } from "./decisions.js";
 import { handleAcpCommand } from "./acp-bridge.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
@@ -120,21 +120,16 @@ async function handleDecisions(
 
   try {
     const companyId = resolvedCompanyId ?? (await resolveCompanyId(ctx, chatId));
-    const found = await fetchPendingInteractions(ctx, baseUrl, companyId, boardApiToken);
-    await sendPendingList(ctx, token, chatId, found, {
+    const found = await fetchAttention(ctx, baseUrl, companyId, boardApiToken);
+    await sendAttentionList(ctx, token, chatId, found, {
       messageThreadId,
       publicUrl: isExternalUrl(publicUrl) ? publicUrl : undefined,
     });
   } catch (err) {
-    // Board access is what makes the decision queue readable, so a 401/403
-    // here usually means it was never connected rather than a real outage.
-    await sendMessage(
-      ctx,
-      token,
-      chatId,
-      `Could not load decisions: ${err instanceof Error ? err.message : String(err)}`,
-      { messageThreadId },
-    );
+    // A raw "403 Board access required" names the symptom and hides the cause,
+    // so translate it into what actually went wrong before sending it on.
+    ctx.logger.error("Failed to load decisions", { error: String(err) });
+    await sendMessage(ctx, token, chatId, describeDecisionsError(err), { messageThreadId });
   }
 }
 

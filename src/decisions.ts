@@ -3,183 +3,217 @@ import { sendMessage, escapeMarkdownV2 } from "./telegram-api.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
 /**
- * What is actually waiting on a human, as the /<company>/decisions page shows it.
+ * What is actually waiting on a human, read from the same source the Decisions
+ * page renders: GET /api/companies/:companyId/attention.
  *
- * The naming here is a trap worth documenting. There IS a `decisions` table and
- * a /companies/:id/decisions endpoint — but that is a different, largely unused
- * feature. The Decisions PAGE is built from **issue thread interactions**:
- * `ask_user_questions` and `request_confirmation` records attached to issues,
- * grouped into "decision queues" (Questions, Plans).
+ * Two earlier attempts got this wrong, in ways worth recording because both
+ * returned a confident, plausible, incomplete answer rather than an error:
  *
- * Querying /decisions?status=open returns [] on an instance with a full page,
- * which reads as "nothing pending" and is worse than an error.
+ *   1. /companies/:id/decisions — a different, largely unused feature. Returns
+ *      [] on an instance whose Decisions page is full.
+ *   2. Walking recent issues for pending issue_thread_interactions. Correct as
+ *      far as it went, but the page is not only interactions: it also surfaces
+ *      blocker_attention, reviews, approvals, recovery actions and more. On a
+ *      live instance showing six items, that approach found one — and it could
+ *      not see the other four blockers at all, at any scan depth.
  *
- * There is no company-wide endpoint that returns pending interactions WITH
- * their content:
- *   - /decision-queues/:key/items returns bare pointers (sourceKind+sourceId),
- *     with no enrichment and no issue id, and it retains resolved items too.
- *   - Interactions are only readable per issue, via /issues/:id/interactions.
- *
- * So this walks recent issues and collects their pending interactions. The
- * bound is deliberate: unbounded, this would be one request per issue for the
- * life of the company. Pending questions are by nature recent — an agent is
- * blocked waiting on them — so recency is the right cut, and the cap is
- * reported to the user rather than hidden.
+ * The attention endpoint solves both: one request instead of one per issue, no
+ * scan bound to apologise for, server-side ranking, and every source kind the
+ * page knows about. It also returns `whyNow` and `decisionVerbs`, so the bot
+ * can say what the decision IS rather than just that one exists.
  */
 
-const CALLBACK_PREFIX = "dec_";
-const DEFAULT_ISSUE_SCAN = 30;
+const DEFAULT_DISPLAY_LIMIT = 5;
 
-export type PendingInteraction = {
+export type AttentionItem = {
   id: string;
-  issueId: string;
-  issueIdentifier?: string;
-  kind: string;
+  sourceKind: string;
   title: string;
-  summary?: string | null;
-  status: string;
+  issueIdentifier?: string;
+  issueHref?: string;
+  whyNow?: string;
+  severity?: string;
+  excerpt?: string;
+  verbs: string[];
+  inlineResolvable: boolean;
 };
 
-type RawInteraction = {
-  id?: string;
-  kind?: string;
-  status?: string;
-  title?: string;
-  summary?: string | null;
+export type AttentionResult = {
+  items: AttentionItem[];
+  totalCount: number;
 };
 
-export function isDecisionCallback(data: string): boolean {
-  return data.startsWith(CALLBACK_PREFIX);
-}
+type RawAttention = {
+  totalCount?: number;
+  items?: Array<Record<string, unknown>>;
+};
 
-/** Human label for an interaction kind; unknown kinds fall back to the raw value. */
-export function describeKind(kind: string): string {
+/** Human label for a source kind; unknown kinds degrade to the raw value. */
+export function describeSourceKind(kind: string): string {
   const labels: Record<string, string> = {
-    ask_user_questions: "Question",
-    request_confirmation: "Confirmation",
+    issue_thread_interaction: "Needs your answer",
+    blocker_attention: "Blocked",
+    approval: "Approval",
+    review: "Review",
+    recovery_action: "Recovery",
+    failed_run: "Failed run",
+    budget_alert: "Budget",
+    agent_error_alert: "Agent error",
+    join_request: "Join request",
+    decision: "Decision",
+    productivity_review: "Productivity review",
   };
   return labels[kind] ?? kind.replace(/_/g, " ");
 }
 
-async function fetchIssueInteractions(
-  ctx: PluginContext,
-  baseUrl: string,
-  issueId: string,
-  boardApiToken?: string,
-): Promise<RawInteraction[]> {
-  try {
-    const response = await fetchPaperclipApi(ctx, `${baseUrl}/api/issues/${issueId}/interactions`, {
-      method: "GET",
-      headers: { ...buildPaperclipAuthHeaders(boardApiToken) },
-    });
-    const parsed = (await (response as Response).json()) as unknown;
-    return Array.isArray(parsed) ? (parsed as RawInteraction[]) : [];
-  } catch {
-    // One unreadable issue must not sink the whole command.
-    return [];
-  }
+function severityMarker(severity?: string): string {
+  if (severity === "high" || severity === "critical") return "🔴";
+  if (severity === "low") return "⚪";
+  return "🟡";
 }
 
 /**
- * Collect interactions still waiting on a person, newest issues first.
- * Returns the scanned count so the caller can be honest about the bound.
+ * Pull the one line of substance out of whichever detail shape this item has.
+ * Each source kind carries a different field, and a missing one is normal
+ * rather than an error — blockers have no prose at all.
  */
-export async function fetchPendingInteractions(
+function extractExcerpt(detail: Record<string, unknown> | undefined): string | undefined {
+  if (!detail) return undefined;
+  const candidates = [detail.firstQuestionText, detail.promptExcerpt, detail.summary];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+}
+
+function toAttentionItem(raw: Record<string, unknown>): AttentionItem {
+  const subject = (raw.subject ?? {}) as Record<string, unknown>;
+  const relatedIssue = (raw.relatedIssue ?? {}) as Record<string, unknown>;
+  const detail = raw.detail as Record<string, unknown> | undefined;
+  const verbs = Array.isArray(raw.decisionVerbs)
+    ? (raw.decisionVerbs as Array<Record<string, unknown>>)
+        .map((v) => (typeof v.label === "string" ? v.label : ""))
+        .filter(Boolean)
+    : [];
+
+  return {
+    id: typeof raw.id === "string" ? raw.id : "",
+    sourceKind: typeof raw.sourceKind === "string" ? raw.sourceKind : "unknown",
+    title: typeof subject.title === "string" ? subject.title : "(untitled)",
+    issueIdentifier:
+      typeof relatedIssue.identifier === "string" ? relatedIssue.identifier : undefined,
+    issueHref: typeof subject.href === "string" ? subject.href : undefined,
+    whyNow: typeof raw.whyNow === "string" ? raw.whyNow : undefined,
+    severity: typeof raw.severity === "string" ? raw.severity : undefined,
+    excerpt: extractExcerpt(detail),
+    verbs,
+    inlineResolvable: raw.inlineResolvable === true,
+  };
+}
+
+/**
+ * Fetch everything waiting on a human. Throws on failure rather than returning
+ * an empty list — "nothing is pending" must never be indistinguishable from
+ * "we could not ask", which is the mistake that made the previous version
+ * report an empty queue while four items sat on the page.
+ */
+export async function fetchAttention(
   ctx: PluginContext,
   baseUrl: string,
   companyId: string,
   boardApiToken?: string,
-  scanLimit: number = DEFAULT_ISSUE_SCAN,
-): Promise<{ pending: PendingInteraction[]; scanned: number }> {
-  const issues = await ctx.issues.list({ companyId, limit: scanLimit });
+): Promise<AttentionResult> {
+  const response = (await fetchPaperclipApi(
+    ctx,
+    `${baseUrl}/api/companies/${companyId}/attention`,
+    { method: "GET", headers: { ...buildPaperclipAuthHeaders(boardApiToken) } },
+  )) as Response;
 
-  // Concurrent, but in small batches: one request per issue against a local
-  // server is fine, a burst of 30 is not.
-  const pending: PendingInteraction[] = [];
-  const batchSize = 6;
-  for (let i = 0; i < issues.length; i += batchSize) {
-    const batch = issues.slice(i, i + batchSize);
-    const results = await Promise.all(
-      batch.map(async (issue) => ({
-        issue,
-        interactions: await fetchIssueInteractions(ctx, baseUrl, issue.id, boardApiToken),
-      })),
-    );
-    for (const { issue, interactions } of results) {
-      for (const interaction of interactions) {
-        if (interaction.status !== "pending") continue;
-        pending.push({
-          id: interaction.id ?? "",
-          issueId: issue.id,
-          issueIdentifier: issue.identifier ?? undefined,
-          kind: interaction.kind ?? "unknown",
-          title: interaction.title ?? "(untitled)",
-          summary: interaction.summary ?? null,
-          status: interaction.status,
-        });
-      }
-    }
-  }
+  const parsed = (await response.json()) as RawAttention;
+  const items = Array.isArray(parsed.items) ? parsed.items.map(toAttentionItem) : [];
 
-  return { pending, scanned: issues.length };
+  return {
+    items,
+    totalCount: typeof parsed.totalCount === "number" ? parsed.totalCount : items.length,
+  };
 }
 
-export function renderPendingInteraction(item: PendingInteraction, publicUrl?: string): string {
-  const lines = [
-    `${escapeMarkdownV2("🗳")} *${escapeMarkdownV2(item.title)}*`,
-    escapeMarkdownV2(`${describeKind(item.kind)} · ${item.issueIdentifier ?? item.issueId}`),
-  ];
+export function renderAttentionItem(item: AttentionItem, publicUrl?: string): string {
+  const heading = `${severityMarker(item.severity)} *${escapeMarkdownV2(item.title)}*`;
+  const context = [describeSourceKind(item.sourceKind), item.issueIdentifier]
+    .filter(Boolean)
+    .join(" · ");
+  const lines = [heading, escapeMarkdownV2(context)];
 
-  const summary = (item.summary ?? "").trim();
-  if (summary) {
-    const excerpt = summary.length > 350 ? `${summary.slice(0, 350)}…` : summary;
+  // whyNow is the host's own one-line explanation of urgency. Preferring it
+  // over anything invented here keeps the bot and the web UI telling the same
+  // story about the same item.
+  if (item.whyNow) lines.push("", escapeMarkdownV2(item.whyNow));
+
+  if (item.excerpt) {
+    const excerpt = item.excerpt.length > 300 ? `${item.excerpt.slice(0, 300)}…` : item.excerpt;
     lines.push("", escapeMarkdownV2(excerpt));
   }
 
-  // Answering needs a form (free text, per-question picks), which Telegram
-  // buttons cannot render — so link out rather than pretend to collect it.
-  if (publicUrl && item.issueIdentifier) {
-    lines.push("", escapeMarkdownV2(`Answer: ${publicUrl}/decisions`));
+  if (item.verbs.length > 0) {
+    lines.push("", escapeMarkdownV2(`Options: ${item.verbs.join(" / ")}`));
+  }
+
+  // Deep-link to the item itself, not to the Decisions index — href already
+  // carries the interaction anchor, so this lands on the thing being decided.
+  if (publicUrl && item.issueHref) {
+    lines.push("", escapeMarkdownV2(`Open: ${publicUrl}${item.issueHref}`));
   }
 
   return lines.join("\n");
 }
 
-export async function sendPendingList(
+export async function sendAttentionList(
   ctx: PluginContext,
   token: string,
   chatId: string,
-  found: { pending: PendingInteraction[]; scanned: number },
+  found: AttentionResult,
   opts: { messageThreadId?: number; publicUrl?: string; limit?: number } = {},
 ): Promise<void> {
-  const { pending, scanned } = found;
+  const { items, totalCount } = found;
 
-  if (pending.length === 0) {
-    await sendMessage(
-      ctx,
-      token,
-      chatId,
-      `Nothing is waiting on your input (checked the ${scanned} most recent issues).`,
-      { messageThreadId: opts.messageThreadId },
-    );
+  if (items.length === 0) {
+    await sendMessage(ctx, token, chatId, "Nothing is waiting on your input.", {
+      messageThreadId: opts.messageThreadId,
+    });
     return;
   }
 
-  const limit = opts.limit ?? 5;
-  for (const item of pending.slice(0, limit)) {
-    await sendMessage(ctx, token, chatId, renderPendingInteraction(item, opts.publicUrl), {
+  const limit = opts.limit ?? DEFAULT_DISPLAY_LIMIT;
+  for (const item of items.slice(0, limit)) {
+    await sendMessage(ctx, token, chatId, renderAttentionItem(item, opts.publicUrl), {
       parseMode: "MarkdownV2",
       messageThreadId: opts.messageThreadId,
     });
   }
 
-  if (pending.length > limit) {
-    await sendMessage(
-      ctx,
-      token,
-      chatId,
-      `…and ${pending.length - limit} more waiting.`,
-      { messageThreadId: opts.messageThreadId },
-    );
+  if (totalCount > limit) {
+    await sendMessage(ctx, token, chatId, `…and ${totalCount - limit} more waiting.`, {
+      messageThreadId: opts.messageThreadId,
+    });
   }
+}
+
+/**
+ * Turn a failure into something the reader can act on. A raw
+ * `403: {"error":"Board access required"}` names the symptom and hides the
+ * cause: the board token was not resolved for this update.
+ */
+export function describeDecisionsError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+
+  if (/\b(401|403)\b/.test(message) || /board access/i.test(message)) {
+    return [
+      "Can't read decisions — the bot has no board access right now.",
+      "",
+      "This is the plugin's board API token failing to resolve, not a permissions change on your account. It usually means the plugin config was loaded without a company scope, which happens on worker restart.",
+    ].join("\n");
+  }
+
+  return `Could not load decisions: ${message}`;
 }

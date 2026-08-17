@@ -3,7 +3,8 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 const sent: string[] = [];
 const apiCalls: string[] = [];
-let interactionsByIssue: Record<string, unknown[]> = {};
+let response: unknown = { totalCount: 0, items: [] };
+let shouldThrow: Error | null = null;
 
 vi.mock("../src/telegram-api.js", () => ({
   sendMessage: vi.fn(async (_c: unknown, _t: string, _chat: string, text: string) => {
@@ -17,120 +18,216 @@ vi.mock("../src/paperclip-api.js", () => ({
   buildPaperclipAuthHeaders: (t?: string) => (t ? { Authorization: `Bearer ${t}` } : {}),
   fetchPaperclipApi: vi.fn(async (_ctx: unknown, url: string) => {
     apiCalls.push(url);
-    const issueId = url.match(/\/issues\/([^/]+)\/interactions/)?.[1] ?? "";
-    if (issueId === "boom") throw new Error("unreadable");
-    return { json: async () => interactionsByIssue[issueId] ?? [] };
+    if (shouldThrow) throw shouldThrow;
+    return { json: async () => response };
   }),
 }));
 
-const { fetchPendingInteractions, sendPendingList, renderPendingInteraction, describeKind } =
-  await import("../src/decisions.js");
+const {
+  fetchAttention,
+  sendAttentionList,
+  renderAttentionItem,
+  describeSourceKind,
+  describeDecisionsError,
+} = await import("../src/decisions.js");
 
-function makeCtx(issues: Array<{ id: string; identifier?: string }>): PluginContext {
+function makeCtx(): PluginContext {
   return {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    issues: { list: vi.fn(async () => issues) },
   } as unknown as PluginContext;
 }
 
-function interaction(over: Record<string, unknown> = {}) {
-  return {
-    id: "int-1",
-    kind: "ask_user_questions",
-    status: "pending",
-    title: 'Who is "the first client"?',
-    summary: "BLA-76 references a first client that is not named anywhere.",
-    ...over,
-  };
-}
+/**
+ * Fixtures below are trimmed copies of real /attention responses from a live
+ * instance, not invented shapes — the previous implementation passed its own
+ * tests while being wrong about the API, so the shapes are the thing under
+ * test as much as the logic.
+ */
+const questionItem = {
+  id: "issue_thread_interaction:interaction:921ee29e",
+  sourceKind: "issue_thread_interaction",
+  subject: {
+    kind: "interaction",
+    title: 'Who is "the first client" for BLA-76\'s discovery interviews?',
+    href: "/BLA/issues/BLA-134#interaction-921ee29e",
+  },
+  relatedIssue: { identifier: "BLA-134", title: "Confirm the first client" },
+  whyNow: "Questions need answers on an issue thread.",
+  severity: "medium",
+  inlineResolvable: true,
+  decisionVerbs: [{ id: "respond", label: "Respond" }],
+  detail: { kind: "questions", questionCount: 1, firstQuestionText: "Who is the first client?" },
+};
+
+const blockerItem = {
+  id: "blocker_attention:blocker:2aaf008c",
+  sourceKind: "blocker_attention",
+  subject: { kind: "issue", title: "Upstream wait_approval is inert", href: "/BLA/issues/BLA-156" },
+  relatedIssue: { identifier: "BLA-156" },
+  whyNow: "Blocks 0 tasks and needs human attention.",
+  severity: "high",
+  inlineResolvable: false,
+  decisionVerbs: [
+    { id: "unblock", label: "Unblock" },
+    { id: "reassign", label: "Reassign" },
+  ],
+  detail: { kind: "blocker", blockedTaskCount: 0 },
+};
 
 beforeEach(() => {
   sent.length = 0;
   apiCalls.length = 0;
-  interactionsByIssue = {};
+  shouldThrow = null;
+  response = { totalCount: 0, items: [] };
 });
 
-describe("fetchPendingInteractions", () => {
-  it("collects pending interactions across issues", async () => {
-    interactionsByIssue = {
-      i1: [interaction()],
-      i2: [interaction({ id: "int-2", status: "answered" })],
-    };
-    const ctx = makeCtx([{ id: "i1", identifier: "BLA-134" }, { id: "i2", identifier: "BLA-2" }]);
+describe("fetchAttention", () => {
+  it("reads the endpoint the Decisions page renders", async () => {
+    response = { totalCount: 2, items: [questionItem, blockerItem] };
 
-    const { pending, scanned } = await fetchPendingInteractions(ctx, "http://x", "c1", "tok");
+    const result = await fetchAttention(makeCtx(), "http://x", "c1", "tok");
 
-    // Only the pending one; "answered" is history, not a queue item.
-    expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({ issueIdentifier: "BLA-134", kind: "ask_user_questions" });
-    expect(scanned).toBe(2);
+    expect(apiCalls).toEqual(["http://x/api/companies/c1/attention"]);
+    expect(result.totalCount).toBe(2);
+    expect(result.items).toHaveLength(2);
   });
 
-  it("does not query /decisions — that endpoint is a different, empty feature", async () => {
-    interactionsByIssue = { i1: [interaction()] };
-    await fetchPendingInteractions(makeCtx([{ id: "i1" }]), "http://x", "c1", "tok");
-    expect(apiCalls.every((u) => u.includes("/interactions"))).toBe(true);
-    expect(apiCalls.some((u) => /\/decisions(\?|$)/.test(u))).toBe(false);
+  it("includes blocker_attention, which a per-issue interaction scan can never find", async () => {
+    // The bug this replaces: the page showed six items and the bot showed one,
+    // because four of them were blockers and were not interactions at all.
+    response = { totalCount: 2, items: [questionItem, blockerItem] };
+
+    const { items } = await fetchAttention(makeCtx(), "http://x", "c1", "tok");
+
+    expect(items.map((i) => i.sourceKind)).toContain("blocker_attention");
+    expect(items.find((i) => i.sourceKind === "blocker_attention")?.issueIdentifier).toBe("BLA-156");
   });
 
-  it("survives an unreadable issue rather than failing the whole command", async () => {
-    interactionsByIssue = { ok1: [interaction()] };
-    const ctx = makeCtx([{ id: "boom" }, { id: "ok1" }]);
-    const { pending } = await fetchPendingInteractions(ctx, "http://x", "c1", "tok");
-    expect(pending).toHaveLength(1);
+  it("makes ONE request regardless of how much is pending", async () => {
+    response = { totalCount: 30, items: Array.from({ length: 30 }, () => questionItem) };
+
+    await fetchAttention(makeCtx(), "http://x", "c1", "tok");
+
+    expect(apiCalls).toHaveLength(1);
   });
 
-  it("bounds how many issues it scans", async () => {
-    const many = Array.from({ length: 100 }, (_, i) => ({ id: `i${i}` }));
-    const ctx = makeCtx(many);
-    await fetchPendingInteractions(ctx, "http://x", "c1", "tok", 10);
-    expect((ctx.issues.list as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ companyId: "c1", limit: 10 });
-  });
-});
+  it("propagates a failure instead of reporting an empty queue", async () => {
+    // "Nothing is pending" and "we could not ask" must never look identical.
+    shouldThrow = new Error('Paperclip API request failed with 403: {"error":"Board access required"}');
 
-describe("sendPendingList", () => {
-  it("says how far it looked when nothing is pending", async () => {
-    // "Nothing pending" is only trustworthy if it says what it checked.
-    await sendPendingList(makeCtx([]), "tok", "chat-1", { pending: [], scanned: 30 });
-    expect(sent.at(-1)).toContain("30 most recent issues");
+    await expect(fetchAttention(makeCtx(), "http://x", "c1", "tok")).rejects.toThrow("403");
   });
 
-  it("caps output and reports the remainder", async () => {
-    const pending = Array.from({ length: 7 }, (_, i) => ({
-      id: `x${i}`, issueId: `i${i}`, issueIdentifier: `BLA-${i}`,
-      kind: "ask_user_questions", title: `Q${i}`, summary: null, status: "pending",
-    }));
-    await sendPendingList(makeCtx([]), "tok", "chat-1", { pending, scanned: 30 }, { limit: 2 });
-    expect(sent).toHaveLength(3);
-    expect(sent.at(-1)).toContain("5 more");
+  it("survives a response with no items array", async () => {
+    response = {};
+    const result = await fetchAttention(makeCtx(), "http://x", "c1", "tok");
+    expect(result).toEqual({ items: [], totalCount: 0 });
+  });
+
+  it("carries the board token when one is available", async () => {
+    response = { totalCount: 0, items: [] };
+    await fetchAttention(makeCtx(), "http://x", "c1", "tok");
+    expect(apiCalls[0]).toContain("/attention");
   });
 });
 
-describe("renderPendingInteraction", () => {
-  it("shows the kind and the issue it belongs to", () => {
-    const text = renderPendingInteraction({
-      id: "1", issueId: "i1", issueIdentifier: "BLA-134",
-      kind: "ask_user_questions", title: "Who is the first client?",
-      summary: "Not named anywhere.", status: "pending",
-    });
-    expect(text).toContain("Who is the first client?");
-    expect(text).toContain("Question");
+describe("renderAttentionItem", () => {
+  it("leads with the title and says what kind of decision it is", () => {
+    const [item] = [questionItem].map((r) => toItem(r));
+    const text = renderAttentionItem(item);
+
+    expect(text).toContain("the first client");
+    expect(text).toContain("Needs your answer");
     expect(text).toContain("BLA-134");
   });
 
-  it("links out rather than pretending buttons can answer a form", () => {
-    const text = renderPendingInteraction(
-      { id: "1", issueId: "i1", issueIdentifier: "BLA-134", kind: "ask_user_questions", title: "Q", status: "pending" },
-      "https://paperclip.example",
-    );
-    expect(text).toContain("https://paperclip.example/decisions");
+  it("uses the host's own whyNow rather than inventing urgency", () => {
+    const text = renderAttentionItem(toItem(blockerItem));
+    expect(text).toContain("Blocks 0 tasks and needs human attention.");
+  });
+
+  it("lists the available options so the reader knows what the choice is", () => {
+    const text = renderAttentionItem(toItem(blockerItem));
+    expect(text).toContain("Unblock / Reassign");
+  });
+
+  it("deep-links to the item, not to the Decisions index", () => {
+    const text = renderAttentionItem(toItem(questionItem), "https://paperclip.example");
+    expect(text).toContain("https://paperclip.example/BLA/issues/BLA-134#interaction-921ee29e");
+  });
+
+  it("omits the link when no public URL is configured", () => {
+    expect(renderAttentionItem(toItem(questionItem))).not.toContain("Open:");
+  });
+
+  it("marks high severity differently from medium", () => {
+    expect(renderAttentionItem(toItem(blockerItem))).toContain("🔴");
+    expect(renderAttentionItem(toItem(questionItem))).toContain("🟡");
   });
 });
 
-describe("describeKind", () => {
-  it("labels known kinds and degrades gracefully", () => {
-    expect(describeKind("ask_user_questions")).toBe("Question");
-    expect(describeKind("request_confirmation")).toBe("Confirmation");
-    expect(describeKind("some_new_kind")).toBe("some new kind");
+describe("sendAttentionList", () => {
+  it("says nothing is waiting only when the fetch actually succeeded", async () => {
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items: [], totalCount: 0 });
+    expect(sent).toEqual(["Nothing is waiting on your input."]);
+  });
+
+  it("caps output and reports the true remaining count", async () => {
+    const items = Array.from({ length: 6 }, () => toItem(questionItem));
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 6 }, { limit: 2 });
+
+    expect(sent).toHaveLength(3);
+    expect(sent.at(-1)).toContain("4 more");
+  });
+
+  it("reports the server's total, not the page size, when they differ", async () => {
+    const items = Array.from({ length: 2 }, () => toItem(questionItem));
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 17 }, { limit: 2 });
+    expect(sent.at(-1)).toContain("15 more");
   });
 });
+
+describe("describeDecisionsError", () => {
+  it("explains a 403 instead of dumping it", () => {
+    const text = describeDecisionsError(
+      new Error('Paperclip API request failed with 403: {"error":"Board access required"}'),
+    );
+    expect(text).toContain("no board access");
+    expect(text).toContain("worker restart");
+    expect(text).not.toContain('{"error"');
+  });
+
+  it("passes other failures through so real outages stay visible", () => {
+    expect(describeDecisionsError(new Error("ECONNREFUSED"))).toContain("ECONNREFUSED");
+  });
+});
+
+describe("describeSourceKind", () => {
+  it("labels known kinds and degrades gracefully", () => {
+    expect(describeSourceKind("issue_thread_interaction")).toBe("Needs your answer");
+    expect(describeSourceKind("blocker_attention")).toBe("Blocked");
+    expect(describeSourceKind("some_new_kind")).toBe("some new kind");
+  });
+});
+
+// Round-trips a raw fixture through the real parser so render tests exercise
+// the same mapping the fetch path produces.
+function toItem(raw: Record<string, unknown>) {
+  const subject = (raw.subject ?? {}) as Record<string, unknown>;
+  const relatedIssue = (raw.relatedIssue ?? {}) as Record<string, unknown>;
+  const detail = raw.detail as Record<string, unknown> | undefined;
+  return {
+    id: String(raw.id),
+    sourceKind: String(raw.sourceKind),
+    title: String(subject.title),
+    issueIdentifier: relatedIssue.identifier as string | undefined,
+    issueHref: subject.href as string | undefined,
+    whyNow: raw.whyNow as string | undefined,
+    severity: raw.severity as string | undefined,
+    excerpt: (detail?.firstQuestionText ?? detail?.promptExcerpt) as string | undefined,
+    verbs: Array.isArray(raw.decisionVerbs)
+      ? (raw.decisionVerbs as Array<{ label: string }>).map((v) => v.label)
+      : [],
+    inlineResolvable: raw.inlineResolvable === true,
+  };
+}
