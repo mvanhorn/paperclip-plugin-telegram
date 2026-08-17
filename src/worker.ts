@@ -373,7 +373,7 @@ export async function listCompaniesForStartup(ctx: PluginContext): Promise<Array
   return [{ id: fallbackCompanyId }];
 }
 
-async function resolveCompanyRuntimes(
+export async function resolveCompanyRuntimes(
   ctx: PluginContext,
   startupConfig: TelegramConfig,
   predicate: (config: TelegramConfig) => boolean,
