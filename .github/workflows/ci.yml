@@ -18,5 +18,9 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run test
+      # test:coverage, not test: it runs the same suite and additionally
+      # enforces the coverage ratchet in vitest.config.ts. Plain `npm run test`
+      # passes on a change that drops coverage, which is what the ratchet is
+      # there to stop.
+      - run: npm run test:coverage
       - run: npm run build

@@ -128,6 +128,9 @@ async function handleDecisions(
     await sendAttentionList(ctx, token, chatId, found, {
       messageThreadId,
       publicUrl: isExternalUrl(publicUrl) ? publicUrl : undefined,
+      baseUrl,
+      companyId,
+      boardApiToken,
     });
   } catch (err) {
     // A raw "403 Board access required" names the symptom and hides the cause,
