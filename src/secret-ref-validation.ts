@@ -12,12 +12,31 @@ const FIELDS = [
   { key: "transcriptionApiKeyRef", required: false },
 ] as const;
 
-export function isValidSecretRef(value: unknown): value is string {
-  return typeof value === "string" && UUID_RE.test(value.trim());
+/**
+ * A secret reference, in either shape a Paperclip host may use.
+ *
+ * Older hosts take a bare secret UUID string. Current hosts require an object
+ * `{ type: "secret_ref", secretId, version? }` and reject the bare string, so
+ * both must be accepted or the plugin is unconfigurable on one of them.
+ */
+export type SecretRef = string | { type: "secret_ref"; secretId: string; version?: number };
+
+export function isValidSecretRef(value: unknown): value is SecretRef {
+  if (typeof value === "string") return UUID_RE.test(value.trim());
+  if (typeof value === "object" && value !== null) {
+    const record = value as { type?: unknown; secretId?: unknown };
+    return (
+      record.type === "secret_ref" &&
+      typeof record.secretId === "string" &&
+      UUID_RE.test(record.secretId.trim())
+    );
+  }
+  return false;
 }
 
 function describeBadValue(value: unknown): string {
   if (value === undefined || value === null) return "<empty>";
+  if (typeof value === "object") return "<object>";
   if (typeof value !== "string") return `<${typeof value}>`;
   const trimmed = value.trim();
   if (trimmed.length === 0) return "<empty string>";
