@@ -76,7 +76,10 @@ export function setupAcpOutputListener(
 ): void {
   ctx.events.on(ACP_OUTPUT_EVENT, async (event) => {
     const payload = event.payload as AcpOutputEvent;
-    await handleAcpOutput(ctx, token, payload);
+    // The envelope's companyId is the host's own; it is already trusted enough
+    // to resolve the bot token. Passing it on keeps the discussion loop from
+    // re-deriving the company from chat state, which is guesswork by comparison.
+    await handleAcpOutput(ctx, token, payload, event.companyId);
   });
 }
 
@@ -277,6 +280,10 @@ async function handleAcpSpawn(
   const trimmedName = agentName.trim();
   const displayName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+  if (!resolvedCompanyId) {
+    await sendMessage(ctx, token, chatId, NOT_LINKED_MESSAGE, { messageThreadId });
+    return;
+  }
 
   // Try native session first: resolve agent by name, then create session
   let transport: "native" | "acp" = "acp";
@@ -437,6 +444,10 @@ async function handleAcpCancel(
   )[0]!;
 
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+  if (!resolvedCompanyId) {
+    await sendMessage(ctx, token, chatId, NOT_LINKED_MESSAGE, { messageThreadId });
+    return;
+  }
 
   if (target.transport === "native") {
     try {
@@ -517,6 +528,10 @@ async function handleAcpClose(
   }
 
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+  if (!resolvedCompanyId) {
+    await sendMessage(ctx, token, chatId, NOT_LINKED_MESSAGE, { messageThreadId });
+    return;
+  }
 
   // Close via the correct transport
   if (targetSession.transport === "native") {
@@ -618,6 +633,12 @@ export async function routeMessageToAgent(
   await saveSessions(ctx, chatId, threadId, sessions);
 
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+  if (!resolvedCompanyId) {
+    // Handled: the message was addressed to a live session, so staying silent
+    // here would look like the agent simply ignored it.
+    await sendMessage(ctx, token, chatId, NOT_LINKED_MESSAGE, { messageThreadId: threadId });
+    return true;
+  }
   const projectId = await resolveMappedProjectIdForTopic(ctx, chatId, resolvedCompanyId, threadId);
 
   // Route via correct transport
@@ -665,6 +686,7 @@ export async function handleAcpOutput(
   ctx: PluginContext,
   token: string,
   event: AcpOutputEvent,
+  companyId?: string,
 ): Promise<void> {
   const { sessionId, chatId, threadId, text, done } = event;
 
@@ -696,7 +718,7 @@ export async function handleAcpOutput(
   }
 
   await sendLabeledOutput(ctx, token, chatId, threadId, sessionId, displayName, text, done);
-  await checkConversationLoopContinuation(ctx, token, chatId, threadId, sessionId, text, done);
+  await checkConversationLoopContinuation(ctx, token, chatId, threadId, sessionId, text, done, companyId);
 }
 
 // --- Output sequencing ---
@@ -1276,6 +1298,7 @@ async function checkConversationLoopContinuation(
   sessionId: string,
   text: string,
   done?: boolean,
+  companyId?: string,
 ): Promise<void> {
   const loop = await ctx.state.get({
     scopeKind: "instance",
@@ -1355,7 +1378,25 @@ async function checkConversationLoopContinuation(
     const nextSession = sessions.find((s) => s.sessionId === nextSessionId);
 
     if (nextSession) {
-      const resolvedCompanyId = await resolveCompanyIdFromChat(ctx, chatId);
+      const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+      if (!resolvedCompanyId) {
+        // Pausing beats continuing: this runs once per turn, so an unresolved
+        // company would otherwise be re-spent on every remaining turn of the
+        // discussion, each failing the same way and none of it visible.
+        loop.status = "paused";
+        await ctx.state.set(
+          { scopeKind: "instance", stateKey: `loop_${chatId}_${threadId}` },
+          loop,
+        );
+        await sendMessage(
+          ctx,
+          token,
+          chatId,
+          `${escapeMarkdownV2("⚠️")} *Discussion Paused* \\- ${escapeMarkdownV2("this chat is not linked to a Paperclip company. Use /connect, then send a message to resume.")}`,
+          { parseMode: "MarkdownV2", messageThreadId: threadId },
+        );
+        return;
+      }
 
       if (nextSession.transport === "native") {
         await wakeAgentWithIssue(
@@ -1404,13 +1445,30 @@ async function saveSessions(
   );
 }
 
-async function resolveCompanyIdFromChat(ctx: PluginContext, chatId: string): Promise<string> {
+/**
+ * The company this chat is linked to, or null when it is linked to nothing.
+ *
+ * This used to fall back to the raw `chatId`, which is a Telegram identifier
+ * and never a Paperclip company id. Every caller then spent that fake id on a
+ * host call that could only fail, and because nothing here throws or logs, an
+ * unlinked chat looked exactly like a working one. The discussion loop made it
+ * worse: it re-resolved per turn, so one unlinked chat produced a fake id on
+ * every turn of an agent-to-agent conversation.
+ *
+ * Returning null forces each caller to say why it stopped. `companyName` stays
+ * as a fallback because worker.ts and commands.ts both accept it for chats
+ * linked by older versions; unlike chatId it is at least a company reference.
+ */
+async function resolveCompanyIdFromChat(ctx: PluginContext, chatId: string): Promise<string | null> {
   const mapping = await ctx.state.get({
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
   }) as { companyId?: string; companyName?: string } | null;
-  return mapping?.companyId ?? mapping?.companyName ?? chatId;
+  return mapping?.companyId ?? mapping?.companyName ?? null;
 }
+
+/** What every call site says when the chat turns out not to be linked. */
+const NOT_LINKED_MESSAGE = "This chat is not linked to a Paperclip company. Use /connect first.";
 
 function simpleHash(text: string): string {
   let hash = 0;
