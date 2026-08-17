@@ -501,6 +501,40 @@ describe("resolveNotificationThreadId", () => {
   });
 });
 
+describe("/start", () => {
+  // Telegram sends /start automatically the first time anyone opens the bot,
+  // so it is the first thing every new user sees. It answered "Unknown command"
+  // — the bot's own greeting told you it was broken.
+  it("answers with help rather than an unknown-command error", async () => {
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "start", "");
+
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].text).toContain("Paperclip Bot Commands");
+    expect(sentMessages[0].text).not.toContain("Unknown command");
+  });
+
+  it("answers identically to /help, since it is the same entry point", async () => {
+    const start = mockCtx();
+    await handleCommand(start, "token", "123", "start", "");
+    const startText = sentMessages[0].text;
+
+    sentMessages = [];
+    const help = mockCtx();
+    await handleCommand(help, "token", "123", "help", "");
+
+    expect(startText).toBe(sentMessages[0].text);
+  });
+
+  it("still reports genuinely unknown commands", async () => {
+    // The fix must not be "answer everything with help".
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "definitely_not_a_command", "");
+
+    expect(sentMessages[0].text).toContain("Unknown command");
+  });
+});
+
 describe("BOT_COMMANDS", () => {
   it("has all expected commands", () => {
     const names = BOT_COMMANDS.map(c => c.command);
