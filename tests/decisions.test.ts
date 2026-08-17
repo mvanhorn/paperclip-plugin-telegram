@@ -147,6 +147,15 @@ describe("fetchAttention", () => {
     await fetchAttention(makeCtx(), "http://x", "c1", "tok");
     expect(apiCalls[0]).toContain("/attention");
   });
+
+  it("defaults verbs to an empty list when the host sends no decisionVerbs", async () => {
+    const { decisionVerbs: _drop, ...withoutVerbs } = questionItem;
+    response = { totalCount: 1, items: [withoutVerbs] };
+
+    const { items } = await fetchAttention(makeCtx(), "http://x", "c1", "tok");
+
+    expect(items[0]!.verbs).toEqual([]);
+  });
 });
 
 describe("renderAttentionItem", () => {
@@ -253,6 +262,79 @@ describe("sendAttentionList — inline answering (BLA-154)", () => {
     const items = [toItem(questionItem)];
 
     await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("fetches the full interaction and sends an interactive prompt for a request_confirmation item", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Ship it?", rejectRequiresReason: true },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).not.toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(1);
+    expect(answerableSendCalls[0]!.interaction).toMatchObject({ kind: "request_confirmation" });
+  });
+
+  it("keeps the Open link for an interaction kind Telegram cannot render as buttons", async () => {
+    fetchedInteraction = { id: "921ee29e", status: "pending", kind: "suggest_tasks", payload: { version: 1 } };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("keeps the Open link when only one of several questions has a free-text option", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [
+          { id: "q1", prompt: "Which?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] },
+          { id: "q2", prompt: "Why?", selectionMode: "single", options: [{ id: "o2", label: "Other", freeText: true }] },
+        ],
+      },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("never attempts an inline answer for a blocker_attention item, which the host marks inlineResolvable: false", async () => {
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items: [toItem(blockerItem)], totalCount: 1 }, {
       baseUrl: "http://x",
       boardApiToken: "tok",
       companyId: "co-1",
