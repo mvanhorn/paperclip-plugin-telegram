@@ -94,6 +94,47 @@ const MUTATIONS = [
     find: '  if (!fresh || fresh.status !== "pending") {',
     replace: "  if (false) {",
   },
+  {
+    id: "chat-id-as-company-id",
+    file: "src/acp-bridge.ts",
+    breaks:
+      "An unlinked chat resolves to its Telegram chat id used as a Paperclip company id — an address that cannot work, spent silently on every host call.",
+    find: "  return mapping?.companyId ?? mapping?.companyName ?? null;",
+    replace: "  return mapping?.companyId ?? mapping?.companyName ?? chatId;",
+  },
+  {
+    id: "loop-company-not-threaded",
+    file: "src/acp-bridge.ts",
+    breaks:
+      "The discussion loop stops using the host's own companyId from the event envelope and re-derives it from chat state, which is guesswork by comparison.",
+    find:
+      "  await checkConversationLoopContinuation(ctx, token, chatId, threadId, sessionId, text, done, companyId);",
+    replace:
+      "  await checkConversationLoopContinuation(ctx, token, chatId, threadId, sessionId, text, done);",
+  },
+  {
+    id: "loop-unresolved-company",
+    file: "src/acp-bridge.ts",
+    breaks:
+      "An agent-to-agent discussion continues with an unresolved company, re-spending the failure on every remaining turn instead of pausing once.",
+    find: `      const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+      if (!resolvedCompanyId) {`,
+    replace: `      const resolvedCompanyId = (companyId ?? await resolveCompanyIdFromChat(ctx, chatId)) as string;
+      if (false) {`,
+  },
+  {
+    id: "route-message-unlinked",
+    file: "src/acp-bridge.ts",
+    breaks:
+      "A message addressed to a live agent session in an unlinked chat is routed to a fake company instead of telling the user to /connect.",
+    find: `  if (!resolvedCompanyId) {
+    // Handled: the message was addressed to a live session, so staying silent
+    // here would look like the agent simply ignored it.
+    await sendMessage(ctx, token, chatId, NOT_LINKED_MESSAGE, { messageThreadId: threadId });
+    return true;
+  }`,
+    replace: "",
+  },
 ];
 
 const args = process.argv.slice(2);
