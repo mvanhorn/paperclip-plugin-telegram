@@ -23,12 +23,27 @@ vi.mock("../src/paperclip-api.js", () => ({
   }),
 }));
 
+const answerableSendCalls: Array<{ chatId: string; interaction: unknown; opts: unknown }> = [];
+let fetchedInteraction: { id: string; status: string; kind: string; payload: unknown } | null = null;
+vi.mock("../src/interaction-answers.js", () => ({
+  fetchInteraction: vi.fn(async () => fetchedInteraction),
+  sendAnswerableInteraction: vi.fn(async (_ctx: unknown, _token: string, chatId: string, interaction: unknown, opts: unknown) => {
+    answerableSendCalls.push({ chatId, interaction, opts });
+    return true;
+  }),
+  isAskUserQuestionsAnswerable: (payload: { questions?: Array<{ options?: Array<{ freeText?: boolean }> }> }) =>
+    Array.isArray(payload?.questions) &&
+    payload.questions.length > 0 &&
+    payload.questions.every((q) => (q.options ?? []).every((o) => o.freeText !== true)),
+}));
+
 const {
   fetchAttention,
   sendAttentionList,
   renderAttentionItem,
   describeSourceKind,
   describeDecisionsError,
+  toAttentionItem,
 } = await import("../src/decisions.js");
 
 function makeCtx(): PluginContext {
@@ -48,8 +63,10 @@ const questionItem = {
   sourceKind: "issue_thread_interaction",
   subject: {
     kind: "interaction",
+    id: "921ee29e",
     title: 'Who is "the first client" for BLA-76\'s discovery interviews?',
     href: "/BLA/issues/BLA-134#interaction-921ee29e",
+    metadata: { kind: "ask_user_questions", issueId: "issue-134" },
   },
   relatedIssue: { identifier: "BLA-134", title: "Confirm the first client" },
   whyNow: "Questions need answers on an issue thread.",
@@ -79,6 +96,8 @@ beforeEach(() => {
   apiCalls.length = 0;
   shouldThrow = null;
   response = { totalCount: 0, items: [] };
+  answerableSendCalls.length = 0;
+  fetchedInteraction = null;
 });
 
 describe("fetchAttention", () => {
@@ -128,6 +147,15 @@ describe("fetchAttention", () => {
     response = { totalCount: 0, items: [] };
     await fetchAttention(makeCtx(), "http://x", "c1", "tok");
     expect(apiCalls[0]).toContain("/attention");
+  });
+
+  it("defaults verbs to an empty list when the host sends no decisionVerbs", async () => {
+    const { decisionVerbs: _drop, ...withoutVerbs } = questionItem;
+    response = { totalCount: 1, items: [withoutVerbs] };
+
+    const { items } = await fetchAttention(makeCtx(), "http://x", "c1", "tok");
+
+    expect(items[0]!.verbs).toEqual([]);
   });
 });
 
@@ -187,6 +215,216 @@ describe("sendAttentionList", () => {
   });
 });
 
+describe("sendAttentionList — inline answering (BLA-154)", () => {
+  it("fetches the full interaction and sends an interactive prompt for a pick-only ask_user_questions item", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: { version: 1, questions: [{ id: "q1", prompt: "Who?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] }] },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).not.toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(1);
+    expect(answerableSendCalls[0]!.chatId).toBe("chat-1");
+    expect(answerableSendCalls[0]!.opts).toMatchObject({ issueId: "issue-134", companyId: "co-1" });
+  });
+
+  it("keeps the Open link and does not send a prompt when a question has a free-text option", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: { version: 1, questions: [{ id: "q1", prompt: "Who?", selectionMode: "single", options: [{ id: "o1", label: "Other", freeText: true }] }] },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("keeps the Open link when the interaction resolved elsewhere since the feed was read", async () => {
+    fetchedInteraction = { id: "921ee29e", status: "answered", kind: "ask_user_questions", payload: { version: 1, questions: [] } };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("fetches the full interaction and sends an interactive prompt for a request_confirmation item", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Ship it?", rejectRequiresReason: true },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).not.toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(1);
+    expect(answerableSendCalls[0]!.interaction).toMatchObject({ kind: "request_confirmation" });
+  });
+
+  it("keeps the Open link for an interaction that was answered since the feed was read", async () => {
+    // The /attention feed is a snapshot. Between reading it and fetching the
+    // interaction, someone can answer it in the web UI. Offering buttons for it
+    // anyway invites an answer the host will reject, and the user is told
+    // nothing about why — so a non-pending status must fall back to the link.
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "answered",
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{ id: "q1", prompt: "Which?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] }],
+      },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+  });
+
+  it("keeps the Open link for an interaction kind Telegram cannot render as buttons", async () => {
+    fetchedInteraction = { id: "921ee29e", status: "pending", kind: "suggest_tasks", payload: { version: 1 } };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("keeps the Open link when only one of several questions has a free-text option", async () => {
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [
+          { id: "q1", prompt: "Which?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] },
+          { id: "q2", prompt: "Why?", selectionMode: "single", options: [{ id: "o2", label: "Other", freeText: true }] },
+        ],
+      },
+    };
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("never attempts an inline answer for a blocker_attention item, which the host marks inlineResolvable: false", async () => {
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items: [toItem(blockerItem)], totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("honours inlineResolvable: false on an interaction, without even fetching it", async () => {
+    // The blocker_attention case above is also screened out by its sourceKind,
+    // so it cannot prove this flag is read. An interaction the host declined to
+    // mark inline-resolvable is the only case where inlineResolvable is the
+    // deciding guard: the host's verdict wins, and we do not spend a fetch
+    // second-guessing it.
+    const notInlineInteraction = { ...questionItem, inlineResolvable: false };
+    fetchedInteraction = {
+      id: "921ee29e",
+      status: "pending",
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{ id: "q1", prompt: "Which?", selectionMode: "single", options: [{ id: "o1", label: "Acme" }] }],
+      },
+    };
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items: [toItem(notInlineInteraction)], totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+      publicUrl: "https://paperclip.example",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+    expect(sent[0]).toContain("https://paperclip.example/BLA/issues/BLA-134");
+  });
+
+  it("does not attempt an inline answer for non-interaction items, even when inlineResolvable", async () => {
+    const approvalItem = {
+      ...toItem(blockerItem),
+      sourceKind: "approval",
+      inlineResolvable: true,
+    };
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items: [approvalItem], totalCount: 1 }, {
+      baseUrl: "http://x",
+      boardApiToken: "tok",
+      companyId: "co-1",
+    });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+
+  it("does not fetch anything when no baseUrl is supplied", async () => {
+    const items = [toItem(questionItem)];
+
+    await sendAttentionList(makeCtx(), "tok", "chat-1", { items, totalCount: 1 }, { companyId: "co-1" });
+
+    expect(answerableSendCalls).toHaveLength(0);
+  });
+});
+
 describe("describeDecisionsError", () => {
   it("explains a 403 instead of dumping it", () => {
     const text = describeDecisionsError(
@@ -211,23 +449,8 @@ describe("describeSourceKind", () => {
 });
 
 // Round-trips a raw fixture through the real parser so render tests exercise
-// the same mapping the fetch path produces.
-function toItem(raw: Record<string, unknown>) {
-  const subject = (raw.subject ?? {}) as Record<string, unknown>;
-  const relatedIssue = (raw.relatedIssue ?? {}) as Record<string, unknown>;
-  const detail = raw.detail as Record<string, unknown> | undefined;
-  return {
-    id: String(raw.id),
-    sourceKind: String(raw.sourceKind),
-    title: String(subject.title),
-    issueIdentifier: relatedIssue.identifier as string | undefined,
-    issueHref: subject.href as string | undefined,
-    whyNow: raw.whyNow as string | undefined,
-    severity: raw.severity as string | undefined,
-    excerpt: (detail?.firstQuestionText ?? detail?.promptExcerpt) as string | undefined,
-    verbs: Array.isArray(raw.decisionVerbs)
-      ? (raw.decisionVerbs as Array<{ label: string }>).map((v) => v.label)
-      : [],
-    inlineResolvable: raw.inlineResolvable === true,
-  };
-}
+// the same mapping the fetch path produces. This MUST delegate rather than
+// re-derive: an earlier hand-copy of toAttentionItem kept these tests passing
+// while the production mapper was broken (a mutation that forced
+// `inlineResolvable: true` — offering blockers inline — went undetected).
+const toItem = toAttentionItem;
