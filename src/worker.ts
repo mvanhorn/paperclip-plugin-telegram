@@ -669,11 +669,7 @@ const plugin = definePlugin({
       if (commandRegistrationRefs.has(runtime.config.telegramBotTokenRef)) continue;
       commandRegistrationRefs.add(runtime.config.telegramBotTokenRef);
 
-      const allCommands = [
-        ...BOT_COMMANDS,
-        { command: "commands", description: "Manage custom workflow commands" },
-      ];
-      setMyCommands(ctx, runtime.token, allCommands)
+      setMyCommands(ctx, runtime.token, BOT_COMMANDS)
         .then((registered) => {
           if (registered) {
             ctx.logger.info("Bot commands registered with Telegram", { companyId: runtime.companyId });

@@ -19,19 +19,23 @@ type TopicMappingRecord = {
 type TopicMappingValue = string | TopicMappingRecord;
 type TopicMap = Record<string, TopicMappingValue>;
 
+// Order drives the / menu Telegram shows on every chat (see setMyCommands in
+// worker.ts), so it is the only discovery path a user has — daily-use
+// commands lead, and setup/forum-only commands (connect, connect_topic,
+// topics) trail since most users touch them once or never.
 export const BOT_COMMANDS: BotCommand[] = [
-  { command: "create", description: "Create a new task (assigned to CEO agent)" },
+  { command: "create", description: "Create a new task for the team" },
   { command: "decisions", description: "List decisions waiting on your input" },
-  { command: "status", description: "Company health: active agents, open issues" },
-  { command: "issues", description: "List open issues (optionally by project)" },
-  { command: "agents", description: "List agents with current status" },
-  { command: "approve", description: "Approve a pending request by ID" },
-  { command: "help", description: "Show available commands" },
+  { command: "status", description: "Show a quick snapshot: active agents and open issues" },
+  { command: "issues", description: "List open issues, optionally by project" },
+  { command: "agents", description: "List all agents and what they're doing" },
+  { command: "approve", description: "Approve a pending request by its ID" },
+  { command: "help", description: "Show this list of commands" },
+  { command: "acp", description: "Manage agent sessions: start, check, cancel, or close" },
+  { command: "commands", description: "Manage custom commands: list, import, run, or delete" },
   { command: "connect", description: "Link this chat to a Paperclip company" },
-  { command: "connect_topic", description: "Map a project to a forum topic" },
-  { command: "topics", description: "List or remove forum topic mappings" },
-  { command: "acp", description: "Manage agent sessions (spawn, status, cancel, close)" },
-  { command: "commands", description: "Manage custom workflow commands (list, import, run, delete)" },
+  { command: "connect_topic", description: "Map a project to this forum topic (forum groups only)" },
+  { command: "topics", description: "List or remove this chat's forum topic mappings" },
 ];
 
 export async function handleCommand(
