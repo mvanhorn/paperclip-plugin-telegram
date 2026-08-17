@@ -34,6 +34,29 @@ export function isValidSecretRef(value: unknown): value is SecretRef {
   return false;
 }
 
+/**
+ * Coerce a secret ref into the shape THIS host accepts before calling
+ * ctx.secrets.resolve().
+ *
+ * Refs reach us in both shapes: config validated by a current host holds
+ * `{ type: "secret_ref", secretId }`, while refs persisted earlier — notably
+ * the board-access state written by the Board Access panel — hold a bare UUID
+ * string. Hosts that require the object form reject the bare string with
+ * "Invalid secret reference for plugin: <uuid>. Use { type: "secret_ref" ... }",
+ * which surfaces to the user as an unexplained 403 from whatever the token was
+ * needed for.
+ *
+ * Passing the object through unchanged keeps older hosts working, since they
+ * accept it as an opaque ref.
+ */
+export function normalizeSecretRef(value: unknown): SecretRef | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return UUID_RE.test(trimmed) ? { type: "secret_ref", secretId: trimmed } : null;
+  }
+  return isValidSecretRef(value) ? value : null;
+}
+
 function describeBadValue(value: unknown): string {
   if (value === undefined || value === null) return "<empty>";
   if (typeof value === "object") return "<object>";

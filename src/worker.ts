@@ -48,7 +48,7 @@ import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.j
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
-import { validateSecretRefFields } from "./secret-ref-validation.js";
+import { validateSecretRefFields, normalizeSecretRef } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import {
@@ -236,7 +236,17 @@ async function resolveBoardApiToken(
     if (seen.has(candidate.ref)) continue;
     seen.add(candidate.ref);
     try {
-      return await ctx.secrets.resolve(candidate.ref, {
+      // The board-access state persists a bare UUID, which hosts requiring the
+      // object form reject outright — surfacing to the user as an unexplained
+      // 403 from whatever needed the token.
+      const ref = normalizeSecretRef(candidate.ref);
+      if (!ref) {
+        ctx.logger.warn("Board API token ref is not a usable secret reference", {
+          source: candidate.source,
+        });
+        continue;
+      }
+      return await ctx.secrets.resolve(ref as unknown as string, {
         companyId: companyId ?? undefined,
         configPath: candidate.source === "config" ? "paperclipBoardApiTokenRef" : undefined,
       });
