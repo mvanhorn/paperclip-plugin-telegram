@@ -23,21 +23,22 @@ export default defineConfig({
        * currently achieves, so the build fails when coverage DROPS — the
        * failure mode worth catching is a change that quietly ships untested.
        *
-       * The global number is low because two large modules are largely
-       * untested (`worker.ts`, `acp-bridge.ts`). Raise these as that changes;
-       * do not lower them to make a red build green.
+       * The global number is still held down by `worker.ts` (33%) and
+       * `acp-bridge.ts` (71%), both large and still filling in. Raise these
+       * as that changes; do not lower them to make a red build green.
        */
       thresholds: {
-        statements: 53,
-        branches: 74,
-        functions: 73,
-        lines: 53,
+        statements: 69,
+        branches: 76,
+        functions: 86,
+        lines: 69,
 
         // Modules where a regression is a user-visible failure, held higher.
-        "src/decisions.ts": { statements: 95, functions: 80 },
-        "src/telegram-api.ts": { statements: 85, functions: 85 },
+        "src/decisions.ts": { statements: 98, functions: 100 },
+        "src/telegram-api.ts": { statements: 88, functions: 88 },
         "src/secret-ref-validation.ts": { statements: 100, functions: 100 },
         "src/allowlist.ts": { statements: 100, functions: 100 },
+        "src/adapter.ts": { statements: 100, functions: 100 },
       },
     },
   },
