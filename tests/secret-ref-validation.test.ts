@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isValidSecretRef, validateSecretRefFields } from "../src/secret-ref-validation.js";
+import { isValidSecretRef, validateSecretRefFields, normalizeSecretRef } from "../src/secret-ref-validation.js";
 
 const VALID_UUID = "12f7ed4a-1234-4d0c-9abc-bd58d44d15e1";
 const VALID_UUID_2 = "abcdef01-2345-6789-abcd-ef0123456789";
@@ -93,5 +93,26 @@ describe("validateSecretRefFields", () => {
       telegramBotTokenRef: { id: VALID_UUID } as unknown as string,
     });
     expect(errors[0]).toContain("<object>");
+  });
+});
+
+describe("normalizeSecretRef", () => {
+  it("wraps a bare UUID into the object form the host requires", () => {
+    expect(normalizeSecretRef("11111111-2222-4333-8444-555555555555")).toEqual({
+      type: "secret_ref",
+      secretId: "11111111-2222-4333-8444-555555555555",
+    });
+  });
+
+  it("passes an already-correct object through unchanged", () => {
+    const ref = { type: "secret_ref", secretId: "11111111-2222-4333-8444-555555555555" };
+    expect(normalizeSecretRef(ref)).toBe(ref);
+  });
+
+  it("rejects values that are not usable refs", () => {
+    expect(normalizeSecretRef("not-a-uuid")).toBeNull();
+    expect(normalizeSecretRef("")).toBeNull();
+    expect(normalizeSecretRef(null)).toBeNull();
+    expect(normalizeSecretRef({ type: "other", secretId: "x" })).toBeNull();
   });
 });
