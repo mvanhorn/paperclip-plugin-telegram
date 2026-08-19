@@ -259,6 +259,82 @@ describe("Command import validation", () => {
     expect(sentMessages[0].text).toContain("Invalid step type");
   });
 
+  it("rejects well-formed JSON that doesn't match the command definition shape", async () => {
+    const ctx = mockCtx();
+    // Parses fine, but is not a command definition: no 'name', no 'steps'.
+    // Distinct from "Invalid JSON" — the JSON itself is valid.
+    await handleCommandsCommand(ctx, "token", "123", `import ${JSON.stringify({ hello: 1 })}`, undefined, "co-1");
+    expect(sentMessages[0].text).not.toContain("Invalid JSON");
+    expect(sentMessages[0].text).toContain("'name'");
+  });
+
+  it("rejects a definition whose 'steps' field is not an array", async () => {
+    const ctx = mockCtx();
+    const cmd = JSON.stringify({ name: "bad", description: "bad", steps: "not-an-array" });
+    await handleCommandsCommand(ctx, "token", "123", `import ${cmd}`, undefined, "co-1");
+    expect(sentMessages[0].text).toContain("'steps'");
+  });
+
+  it("rejects a send_message step missing 'text'", async () => {
+    const ctx = mockCtx();
+    const cmd = JSON.stringify({
+      name: "bad",
+      description: "bad",
+      steps: [{ id: "s1", type: "send_message" }],
+    });
+    await handleCommandsCommand(ctx, "token", "123", `import ${cmd}`, undefined, "co-1");
+    expect(sentMessages[0].text).toContain("'text'");
+
+    // Rejected at import time, not stored — nothing for executeWorkflow to
+    // half-run later.
+    const stored = stateStore["commands_co-1"] as Array<{ name: string }> | undefined;
+    expect(stored).toBeUndefined();
+  });
+
+  it("rejects a fetch_issue step missing 'issueId'", async () => {
+    const ctx = mockCtx();
+    const cmd = JSON.stringify({
+      name: "bad",
+      description: "bad",
+      steps: [{ id: "s1", type: "fetch_issue" }],
+    });
+    await handleCommandsCommand(ctx, "token", "123", `import ${cmd}`, undefined, "co-1");
+    expect(sentMessages[0].text).toContain("'issueId'");
+  });
+
+  it("rejects an http_request step with an invalid method", async () => {
+    const ctx = mockCtx();
+    const cmd = JSON.stringify({
+      name: "bad",
+      description: "bad",
+      steps: [{ id: "s1", type: "http_request", url: "https://example.com", method: "PATCH" }],
+    });
+    await handleCommandsCommand(ctx, "token", "123", `import ${cmd}`, undefined, "co-1");
+    expect(sentMessages[0].text).toContain("'method'");
+  });
+
+  it("rejects an http_request step whose headers are not string values", async () => {
+    const ctx = mockCtx();
+    const cmd = JSON.stringify({
+      name: "bad",
+      description: "bad",
+      steps: [{ id: "s1", type: "http_request", url: "https://example.com", method: "GET", headers: { "X-Test": 1 } }],
+    });
+    await handleCommandsCommand(ctx, "token", "123", `import ${cmd}`, undefined, "co-1");
+    expect(sentMessages[0].text).toContain("'headers'");
+  });
+
+  it("accepts a fully-specified http_request step", async () => {
+    const ctx = mockCtx();
+    const cmd = JSON.stringify({
+      name: "webhook",
+      description: "Call a webhook",
+      steps: [{ id: "s1", type: "http_request", url: "https://example.com", method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }],
+    });
+    await handleCommandsCommand(ctx, "token", "123", `import ${cmd}`, undefined, "co-1");
+    expect(sentMessages[0].text).toContain("imported");
+  });
+
   it("updates existing command on re-import", async () => {
     stateStore["commands_co-1"] = [{
       name: "deploy",
