@@ -2,6 +2,7 @@ import type { PluginContext, AgentSessionEvent } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { truncateAtWord } from "./telegram-api.js";
 import { resolveMappedProjectIdForTopic } from "./topic-projects.js";
+import { str } from "./coerce.js";
 import {
   MAX_AGENTS_PER_THREAD,
   DEFAULT_CONVERSATION_TURNS,
@@ -927,11 +928,11 @@ export async function handleHandoffToolCall(
   companyId: string,
   sourceAgentId: string,
 ): Promise<{ content?: string; error?: string }> {
-  const targetAgent = String(params.targetAgent ?? "");
-  const reason = String(params.reason ?? "");
-  const contextSummary = String(params.contextSummary ?? "");
+  const targetAgent = str(params.targetAgent);
+  const reason = str(params.reason);
+  const contextSummary = str(params.contextSummary);
   const requiresApproval = params.requiresApproval !== false;
-  const chatId = String(params.chatId ?? "");
+  const chatId = str(params.chatId);
   const threadId = Number(params.threadId ?? 0);
 
   if (!targetAgent || !chatId || !threadId) {
@@ -1157,12 +1158,12 @@ export async function handleDiscussToolCall(
   companyId: string,
   sourceAgentId: string,
 ): Promise<{ content?: string; error?: string }> {
-  const targetAgent = String(params.targetAgent ?? "");
-  const topic = String(params.topic ?? "");
-  const initialMessage = String(params.initialMessage ?? "");
+  const targetAgent = str(params.targetAgent);
+  const topic = str(params.topic);
+  const initialMessage = str(params.initialMessage);
   const maxTurns = Math.min(Number(params.maxTurns ?? DEFAULT_CONVERSATION_TURNS), MAX_CONVERSATION_TURNS);
   const humanCheckpointAt = params.humanCheckpointAt != null ? Number(params.humanCheckpointAt) : undefined;
-  const chatId = String(params.chatId ?? "");
+  const chatId = str(params.chatId);
   const threadId = Number(params.threadId ?? 0);
 
   if (!targetAgent || !initialMessage || !chatId || !threadId) {

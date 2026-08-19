@@ -277,3 +277,89 @@ describe("formatAgentRunFinished", () => {
     expect(msg.options.disableNotification).toBe(true);
   });
 });
+
+// BLA-344: event/tool payloads arrive as `Record<string, unknown>` off the
+// wire. A field that turns out to be an object rather than a primitive must
+// never reach `String()` directly, or the Telegram message renders the
+// literal text "[object Object]" instead of failing loudly.
+describe("object-valued payload fields never render [object Object]", () => {
+  const objectField = { nested: "value" };
+
+  it("formatIssueCreated falls back instead of stringifying object fields", () => {
+    const msg = formatIssueCreated(mockEvent({
+      identifier: objectField,
+      title: objectField,
+      status: objectField,
+      priority: objectField,
+      assigneeName: objectField,
+      projectName: objectField,
+      description: objectField,
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("iss\\-123"); // falls back to entityId
+    expect(msg.text).toContain("Untitled");
+  });
+
+  it("formatIssueAssigned falls back instead of stringifying object fields", () => {
+    const msg = formatIssueAssigned(mockEvent({
+      identifier: objectField,
+      title: objectField,
+      assigneeName: objectField,
+      _previous: { assigneeName: objectField },
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("Unassigned");
+  });
+
+  it("formatIssueDone falls back instead of stringifying object fields", () => {
+    const msg = formatIssueDone(mockEvent({
+      identifier: objectField,
+      title: objectField,
+      comment: objectField,
+    }));
+    expect(msg.text).not.toContain("object Object");
+  });
+
+  it("formatApprovalCreated falls back instead of stringifying object fields, including nested linked issues", () => {
+    const msg = formatApprovalCreated(mockEvent({
+      type: objectField,
+      approvalId: objectField,
+      title: objectField,
+      description: objectField,
+      agentName: "Bot", // kept a real string so the "Type:" line renders below
+      linkedIssues: [
+        { identifier: objectField, title: objectField, status: objectField, priority: objectField, assignee: objectField },
+      ],
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("unknown"); // approvalType fallback
+  });
+
+  it("formatAgentError falls back instead of stringifying object fields", () => {
+    const msg = formatAgentError(mockEvent({
+      agentId: objectField,
+      agentName: objectField,
+      name: objectField,
+      error: objectField,
+      message: objectField,
+      runId: objectField,
+      companyName: objectField,
+      issueIdentifier: objectField,
+      issueTitle: objectField,
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("Unknown error");
+  });
+
+  it("formatAgentRunStarted falls back to entityId when agentId and agentName are objects", () => {
+    const msg = formatAgentRunStarted(mockEvent({ agentId: objectField, agentName: objectField }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("iss\\-123");
+  });
+
+  it("formatAgentRunFinished falls back to entityId when agentId and agentName are objects", () => {
+    const msg = formatAgentRunFinished(mockEvent({ agentId: objectField, agentName: objectField }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("iss\\-123");
+  });
+});

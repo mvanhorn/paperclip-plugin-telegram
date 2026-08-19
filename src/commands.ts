@@ -4,6 +4,7 @@ import { METRIC_NAMES } from "./constants.js";
 import { countAgents } from "./agent-status.js";
 import { handleAcpCommand } from "./acp-bridge.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
+import { str } from "./coerce.js";
 
 type BotCommand = {
   command: string;
@@ -816,10 +817,10 @@ async function resolveEventProjectName(
   event: PluginEvent,
 ): Promise<string | undefined> {
   const payload = event.payload as Record<string, unknown>;
-  const payloadProjectName = payload.projectName ? String(payload.projectName) : undefined;
+  const payloadProjectName = payload.projectName ? str(payload.projectName) : undefined;
   if (payloadProjectName) return payloadProjectName;
 
-  const payloadProjectId = payload.projectId ? String(payload.projectId) : undefined;
+  const payloadProjectId = payload.projectId ? str(payload.projectId) : undefined;
   if (payloadProjectId) {
     try {
       const project = await ctx.projects.get(payloadProjectId, event.companyId);
