@@ -10,6 +10,10 @@ type BotCommand = {
   description: string;
 };
 
+// Leaves headroom below Telegram's 4096-char hard limit for /agents so a
+// company with many agents doesn't produce a message the API silently drops.
+const AGENTS_MESSAGE_CHAR_BUDGET = 3500;
+
 type TopicMappingRecord = {
   projectId?: string;
   projectName: string;
@@ -223,14 +227,25 @@ async function handleAgents(
     const hasLinks = isExternalUrl(publicUrl);
     const statusEmoji: Record<string, string> = { active: "🟢", error: "🔴", paused: "🟡", idle: "⚪", running: "🔵" };
     const lines = [escapeMarkdownV2("🤖") + " *Agents*", ""];
+    let shown = 0;
     for (const agent of agents) {
       const emoji = statusEmoji[agent.status] ?? "⚪";
-      if (hasLinks) {
-        const url = `${publicUrl}/agents/${agent.id}`;
-        lines.push(`${escapeMarkdownV2(emoji)} [${escapeMarkdownV2(agent.name)}](${url}) \\- ${escapeMarkdownV2(agent.status)}`);
-      } else {
-        lines.push(`${escapeMarkdownV2(emoji)} *${escapeMarkdownV2(agent.name)}* \\- ${escapeMarkdownV2(agent.status)}`);
-      }
+      const line = hasLinks
+        ? `${escapeMarkdownV2(emoji)} [${escapeMarkdownV2(agent.name)}](${publicUrl}/agents/${agent.id}) \\- ${escapeMarkdownV2(agent.status)}`
+        : `${escapeMarkdownV2(emoji)} *${escapeMarkdownV2(agent.name)}* \\- ${escapeMarkdownV2(agent.status)}`;
+
+      // Stop before the message grows past Telegram's 4096-char hard limit,
+      // leaving room for a trailing "and N more" line.
+      const projected = lines.join("\n").length + 1 + line.length;
+      if (shown > 0 && projected > AGENTS_MESSAGE_CHAR_BUDGET) break;
+
+      lines.push(line);
+      shown++;
+    }
+
+    const remaining = agents.length - shown;
+    if (remaining > 0) {
+      lines.push("", escapeMarkdownV2(`…and ${remaining} more`));
     }
 
     await sendMessage(ctx, token, chatId, lines.join("\n"), {
