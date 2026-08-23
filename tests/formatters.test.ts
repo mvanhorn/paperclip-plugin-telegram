@@ -216,17 +216,39 @@ describe("formatAgentError", () => {
     expect(msg.text).not.toContain("x".repeat(501));
   });
 
-  it("falls back to entityId for agent name", () => {
-    const msg = formatAgentError(mockEvent({ agentName: undefined, name: undefined }));
-    expect(msg.text).toContain("iss\\-123");
+  it("uses a compact label instead of raw UUID when agent name is missing", () => {
+    const agentId = "287196d3-6e28-4094-80cd-e7a3710b2ba1";
+    const msg = formatAgentError(mockEvent({ agentId, agentName: undefined, name: undefined }));
+    expect(msg.text).toContain("Agent 287196d3");
+    expect(msg.text).not.toContain("*287196d3\\-6e28\\-4094\\-80cd\\-e7a3710b2ba1*");
+  });
+
+  it("keeps the full agent id in a metadata line when the label was shortened", () => {
+    const agentId = "287196d3-6e28-4094-80cd-e7a3710b2ba1";
+    const msg = formatAgentError(mockEvent({ agentId, agentName: undefined, name: undefined }));
+    expect(msg.text).toContain("Agent ID: `287196d3\\-6e28\\-4094\\-80cd\\-e7a3710b2ba1`");
+  });
+
+  it("omits the agent id metadata line when a real agent name is present", () => {
+    const msg = formatAgentError(mockEvent({ agentName: "Deployer" }));
+    expect(msg.text).toContain("Deployer");
+    expect(msg.text).not.toContain("Agent ID:");
   });
 });
 
 describe("formatAgentRunStarted", () => {
-  it("includes agent name", () => {
+  it("uses concise human lifecycle copy", () => {
     const msg = formatAgentRunStarted(mockEvent({ agentName: "Deployer" }));
     expect(msg.text).toContain("Deployer");
-    expect(msg.text).toContain("started");
+    expect(msg.text).toContain("started run");
+    expect(msg.text).not.toContain("started a new run");
+  });
+
+  it("uses a compact label instead of raw UUID when agent name is missing", () => {
+    const agentId = "287196d3-6e28-4094-80cd-e7a3710b2ba1";
+    const msg = formatAgentRunStarted(mockEvent({ agentId, agentName: undefined }));
+    expect(msg.text).toContain("Agent 287196d3");
+    expect(msg.text).not.toContain("287196d3\\-6e28\\-4094\\-80cd\\-e7a3710b2ba1");
   });
 
   it("disables notification", () => {
@@ -236,10 +258,18 @@ describe("formatAgentRunStarted", () => {
 });
 
 describe("formatAgentRunFinished", () => {
-  it("includes agent name and completion text", () => {
+  it("uses concise human lifecycle copy", () => {
     const msg = formatAgentRunFinished(mockEvent({ agentName: "Deployer" }));
     expect(msg.text).toContain("Deployer");
-    expect(msg.text).toContain("completed");
+    expect(msg.text).toContain("completed run");
+    expect(msg.text).not.toContain("completed successfully");
+  });
+
+  it("uses a compact label instead of raw UUID when agent name is missing", () => {
+    const agentId = "287196d3-6e28-4094-80cd-e7a3710b2ba1";
+    const msg = formatAgentRunFinished(mockEvent({ agentId, agentName: undefined }));
+    expect(msg.text).toContain("Agent 287196d3");
+    expect(msg.text).not.toContain("287196d3\\-6e28\\-4094\\-80cd\\-e7a3710b2ba1");
   });
 
   it("disables notification", () => {
