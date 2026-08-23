@@ -220,7 +220,19 @@ describe("formatAgentError", () => {
     const agentId = "287196d3-6e28-4094-80cd-e7a3710b2ba1";
     const msg = formatAgentError(mockEvent({ agentId, agentName: undefined, name: undefined }));
     expect(msg.text).toContain("Agent 287196d3");
-    expect(msg.text).not.toContain("287196d3\\-6e28\\-4094\\-80cd\\-e7a3710b2ba1");
+    expect(msg.text).not.toContain("*287196d3\\-6e28\\-4094\\-80cd\\-e7a3710b2ba1*");
+  });
+
+  it("keeps the full agent id in a metadata line when the label was shortened", () => {
+    const agentId = "287196d3-6e28-4094-80cd-e7a3710b2ba1";
+    const msg = formatAgentError(mockEvent({ agentId, agentName: undefined, name: undefined }));
+    expect(msg.text).toContain("Agent ID: `287196d3\\-6e28\\-4094\\-80cd\\-e7a3710b2ba1`");
+  });
+
+  it("omits the agent id metadata line when a real agent name is present", () => {
+    const msg = formatAgentError(mockEvent({ agentName: "Deployer" }));
+    expect(msg.text).toContain("Deployer");
+    expect(msg.text).not.toContain("Agent ID:");
   });
 });
 

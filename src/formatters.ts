@@ -225,7 +225,8 @@ export function formatApprovalCreated(event: PluginEvent, opts?: IssueLinksOpts)
 export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);
-  const agentName = displayAgentName(String(p.agentName ?? p.name ?? agentId));
+  const rawAgentName = String(p.agentName ?? p.name ?? agentId);
+  const agentName = displayAgentName(rawAgentName);
   const errorMessage = String(p.error ?? p.message ?? "Unknown error");
   const runId = p.runId ? String(p.runId) : null;
   const companyName = p.companyName ? String(p.companyName) : null;
@@ -236,6 +237,10 @@ export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): For
     `${esc("❌")} ${bold(classifyAgentError(errorMessage))}`,
     `Agent: ${bold(agentName)}`,
   ];
+  // The compact label hides the identifier it was derived from, and the "View Agent"
+  // button only exists when a public base URL is configured. Keep the full id in a
+  // metadata line so error notifications stay correlatable without one.
+  if (agentName !== rawAgentName) lines.push(`Agent ID: ${code(rawAgentName)}`);
   if (companyName) lines.push(`Company: ${esc(companyName)}`);
   if (issueIdentifier) {
     lines.push(

@@ -28,7 +28,7 @@ This is that plugin.
 - **Issue created** - Title, description, status, priority, assignee, project fields, and a "View Issue" link
 - **Issue done** - Completion confirmation with status fields
 - **Approval requested** - Interactive **Approve** and **Reject** inline buttons. Click to act without leaving Telegram.
-- **Agent error** - Error message with warning indicator and human-readable agent label
+- **Agent error** - Error message with warning indicator and human-readable agent label (the full agent ID is kept in a metadata line for correlation)
 - **Agent run started/finished** - Optional lifecycle notifications, disabled by default to avoid chat spam
 
 ### Interactive approvals
