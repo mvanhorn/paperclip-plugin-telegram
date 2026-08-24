@@ -1,6 +1,7 @@
 import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
+import { countAgents } from "./agent-status.js";
 import { handleAcpCommand } from "./acp-bridge.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 
@@ -109,17 +110,16 @@ async function handleStatus(
     const companyId = resolvedCompanyId ?? await resolveCompanyId(ctx, chatId);
     const agents = await ctx.agents.list({ companyId });
     // Agents report "running" or "idle" (and "paused"/"error" when unavailable).
-    // Counting `status === "active"` matched nothing, so this line always read
-    // "0/N" no matter how many agents were working.
-    const running = agents.filter((a: Agent) => a.status === "running" || a.status === "active");
-    const unavailable = agents.filter((a: Agent) => a.status === "paused" || a.status === "error");
+    // Counting `status === "active"` matched nothing on current hosts, so this
+    // line always read "0/N" no matter how many agents were working.
+    const counts = countAgents(agents);
     const issues = await ctx.issues.list({ companyId, limit: 10 });
     const doneIssues = issues.filter((i: Issue) => i.status === "done");
 
     const agentLine =
-      `${escapeMarkdownV2("🤖")} Agents: *${running.length}* running, ` +
-      `*${escapeMarkdownV2(String(agents.length - unavailable.length))}* available` +
-      (unavailable.length > 0 ? escapeMarkdownV2(` (${unavailable.length} paused/error)`) : "");
+      `${escapeMarkdownV2("🤖")} Agents: *${counts.working}* running, ` +
+      `*${escapeMarkdownV2(String(counts.available))}* available` +
+      (counts.unavailable > 0 ? escapeMarkdownV2(` (${counts.unavailable} paused/error)`) : "");
 
     const lines = [
       escapeMarkdownV2("📊") + " *Paperclip Status*",

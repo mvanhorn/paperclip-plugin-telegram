@@ -33,15 +33,16 @@ describe("/status agent counts", () => {
     sent.length = 0;
   });
 
-  it("counts running agents — the old filter looked for a status that never occurs", async () => {
-    // Agents report "running"/"idle"; nothing is ever "active", so the previous
-    // `status === "active"` filter reported 0 while agents were working.
+  it("counts running agents — the old filter looked for a status current hosts do not emit", async () => {
+    // Agents report "running"/"idle"; "active" is not observed on current hosts,
+    // so the previous `status === "active"` filter reported 0 while agents were
+    // working.
     const ctx = makeCtx([agent("running"), agent("idle"), agent("idle")]);
     await handleCommand(ctx, "tok", "chat-1", "status", "", undefined, undefined, undefined, "company-1");
     expect(sent.at(-1)).toContain("1* running");
   });
 
-  it("still counts a legacy 'active' status as running", async () => {
+  it("still counts an 'active' status as running, in case a host emits it", async () => {
     const ctx = makeCtx([agent("active"), agent("idle")]);
     await handleCommand(ctx, "tok", "chat-1", "status", "", undefined, undefined, undefined, "company-1");
     expect(sent.at(-1)).toContain("1* running");
@@ -54,6 +55,28 @@ describe("/status agent counts", () => {
     expect(text).toContain("1* running");
     expect(text).toContain("2* available");
     expect(text).toContain("2 paused/error");
+  });
+
+  it("does not count terminated or pending_approval agents as available", async () => {
+    // Subtracting paused/error from the total counted these two as available.
+    const ctx = makeCtx([
+      agent("running"),
+      agent("idle"),
+      agent("terminated"),
+      agent("pending_approval"),
+    ]);
+    await handleCommand(ctx, "tok", "chat-1", "status", "", undefined, undefined, undefined, "company-1");
+    const text = sent.at(-1)!;
+    expect(text).toContain("1* running");
+    expect(text).toContain("2* available");
+    expect(text).not.toContain("4* available");
+    expect(text).not.toContain("paused/error");
+  });
+
+  it("counts availability positively, so an unknown future status is not available", async () => {
+    const ctx = makeCtx([agent("idle"), agent("some_new_status_from_a_later_sdk")]);
+    await handleCommand(ctx, "tok", "chat-1", "status", "", undefined, undefined, undefined, "company-1");
+    expect(sent.at(-1)).toContain("1* available");
   });
 
   it("omits the paused/error note when everything is healthy", async () => {
