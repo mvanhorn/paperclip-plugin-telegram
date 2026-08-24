@@ -848,9 +848,9 @@ const plugin = definePlugin({
             ];
 
             // The list is not ranked, so this names an agent that is working, not
-            // the best one. The old "Top performer" label was never seen because
-            // the filter above matched nothing; do not resurrect it as a claim
-            // the data cannot support.
+            // the best one. The old "Top performer" label went unseen wherever the
+            // filter above found nothing; do not resurrect it as a claim the data
+            // cannot support.
             if (workingAgents.length > 0) {
               const workingAgent = workingAgents[0]!.name;
               lines.push(`${escapeMarkdownV2("\u2b50")} Working: *${escapeMarkdownV2(workingAgent)}*`);
