@@ -52,8 +52,7 @@ import { validateSecretRefFields, normalizeSecretRef } from "./secret-ref-valida
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import {
-  SECRET_RESOLUTION_DISABLED_MESSAGE,
-  SECRET_RESOLUTION_ISSUE_URL,
+  SECRET_RESOLUTION_FAILED_MESSAGE,
   type TelegramRuntimeHealth,
 } from "./runtime-token.js";
 import { loadStartupConfig, resolveCompatibleConfig } from "./config-compat.js";
@@ -276,7 +275,7 @@ async function resolveTelegramBotToken(
 
 async function resolveTelegramBotTokenRef(
   ctx: PluginContext,
-  tokenRef: string,
+  tokenRef: unknown,
   companyId?: string | null,
 ): Promise<string | null> {
   if (!companyId) {
@@ -284,18 +283,25 @@ async function resolveTelegramBotTokenRef(
     return null;
   }
 
+  const normalizedRef = normalizeSecretRef(tokenRef);
+  if (!normalizedRef) {
+    ctx.logger.warn("Telegram bot token ref is not a usable secret reference", { companyId });
+    return null;
+  }
+
   try {
-    return await ctx.secrets.resolve(tokenRef, {
+    return await ctx.secrets.resolve(normalizedRef as unknown as string, {
       companyId,
       configPath: "telegramBotTokenRef",
     });
   } catch (err) {
     runtimeHealth = {
       status: "degraded",
-      message: SECRET_RESOLUTION_DISABLED_MESSAGE,
+      message: SECRET_RESOLUTION_FAILED_MESSAGE,
       details: {
-        issue: "paperclip-plugin-secret-resolution-disabled",
-        reference: SECRET_RESOLUTION_ISSUE_URL,
+        issue: "telegram-bot-token-resolution-failed",
+        companyId,
+        error: String(err),
       },
     };
     ctx.logger.warn("Failed to resolve Telegram bot token secret", {
@@ -319,6 +325,12 @@ type TelegramPollingRuntimeGroup = {
   token: string;
   runtimes: TelegramCompanyRuntime[];
 };
+
+function secretRefKey(value: unknown): string | null {
+  const normalized = normalizeSecretRef(value);
+  if (!normalized) return null;
+  return typeof normalized === "string" ? normalized : normalized.secretId;
+}
 
 /**
  * Enumerate companies for startup, tolerating hosts where `companies.list` is
@@ -361,7 +373,7 @@ async function listCompaniesForStartup(ctx: PluginContext): Promise<Array<{ id: 
   return [{ id: fallbackCompanyId }];
 }
 
-async function resolveCompanyRuntimes(
+export async function resolveCompanyRuntimes(
   ctx: PluginContext,
   startupConfig: TelegramConfig,
   predicate: (config: TelegramConfig) => boolean,
@@ -397,7 +409,6 @@ async function resolveCompanyRuntimes(
 
     const effectiveConfig = { ...startupConfig, ...scopedConfig } as unknown as TelegramConfig;
     const hasCompanyTelegramRoute = [
-      "telegramBotTokenRef",
       "defaultChatId",
       "approvalsChatId",
       "approvalsTopicId",
@@ -410,7 +421,7 @@ async function resolveCompanyRuntimes(
       const value = effectiveConfig[key as keyof TelegramConfig];
       const startupValue = startupConfig[key as keyof TelegramConfig];
       return typeof value === "string" && value.trim() && value !== startupValue;
-    });
+    }) || secretRefKey(effectiveConfig.telegramBotTokenRef) !== null;
     if (!hasCompanyTelegramRoute) continue;
 
     if (!predicate(effectiveConfig)) continue;
@@ -643,13 +654,21 @@ const plugin = definePlugin({
     );
     if (pollingRuntimes.length === 0) {
       ctx.logger.warn("No company-scoped Telegram bot token is resolvable during startup; setup will continue without polling");
+      runtimeHealth = {
+        status: "degraded",
+        message: "No company-scoped Telegram bot runtime could be resolved during startup",
+        details: {
+          issue: "no-telegram-runtime",
+        },
+      };
     }
 
     const commandRegistrationRefs = new Set<string>();
     for (const runtime of pollingRuntimes) {
       if (!runtime.config.enableCommands) continue;
-      if (commandRegistrationRefs.has(runtime.config.telegramBotTokenRef)) continue;
-      commandRegistrationRefs.add(runtime.config.telegramBotTokenRef);
+      const tokenRefKey = secretRefKey(runtime.config.telegramBotTokenRef);
+      if (!tokenRefKey || commandRegistrationRefs.has(tokenRefKey)) continue;
+      commandRegistrationRefs.add(tokenRefKey);
 
       const allCommands = [
         ...BOT_COMMANDS,
@@ -728,7 +747,8 @@ const plugin = definePlugin({
 
     const pollingGroups = new Map<string, TelegramPollingRuntimeGroup>();
     for (const runtime of pollingRuntimes) {
-      const tokenRef = runtime.config.telegramBotTokenRef;
+      const tokenRef = secretRefKey(runtime.config.telegramBotTokenRef);
+      if (!tokenRef) continue;
       const existing = pollingGroups.get(tokenRef);
       if (existing) {
         existing.runtimes.push(runtime);

@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
-  SECRET_RESOLUTION_DISABLED_MESSAGE,
-  SECRET_RESOLUTION_ISSUE_URL,
+  SECRET_RESOLUTION_FAILED_MESSAGE,
   resolveStartupTelegramBotToken,
   type TelegramRuntimeHealth,
 } from "../src/runtime-token.js";
@@ -30,7 +29,7 @@ describe("resolveStartupTelegramBotToken", () => {
   it("degrades health and does not throw when Paperclip secret resolution fails", async () => {
     const health: TelegramRuntimeHealth[] = [];
     const ctx = makeContext(async () => {
-      throw new Error(SECRET_RESOLUTION_DISABLED_MESSAGE);
+      throw new Error(SECRET_RESOLUTION_FAILED_MESSAGE);
     });
 
     const token = await resolveStartupTelegramBotToken(ctx, "secret-ref", (next) => health.push(next));
@@ -38,17 +37,16 @@ describe("resolveStartupTelegramBotToken", () => {
     expect(token).toBeUndefined();
     expect(health).toEqual([{
       status: "degraded",
-      message: SECRET_RESOLUTION_DISABLED_MESSAGE,
+      message: SECRET_RESOLUTION_FAILED_MESSAGE,
       details: {
-        issue: "paperclip-plugin-secret-resolution-disabled",
-        reference: SECRET_RESOLUTION_ISSUE_URL,
+        issue: "telegram-bot-token-resolution-failed",
+        error: `Error: ${SECRET_RESOLUTION_FAILED_MESSAGE}`,
       },
     }]);
     expect(ctx.logger.error).toHaveBeenCalledWith(
       "Telegram plugin cannot resolve bot token secret; runtime features are disabled",
       {
-        error: `Error: ${SECRET_RESOLUTION_DISABLED_MESSAGE}`,
-        reference: SECRET_RESOLUTION_ISSUE_URL,
+        error: `Error: ${SECRET_RESOLUTION_FAILED_MESSAGE}`,
       },
     );
   });
