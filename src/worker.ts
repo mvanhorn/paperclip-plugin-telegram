@@ -49,6 +49,7 @@ import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
 import { validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
+import { isWorking } from "./agent-status.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import { resolveStartupTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
 
@@ -816,7 +817,9 @@ const plugin = definePlugin({
 
           try {
             const agents = await ctx.agents.list({ companyId: company.id });
-            const activeAgents = agents.filter((a: Agent) => a.status === "active");
+            // Same defect as /status had: `status === "active"` matched nothing on
+            // current hosts, so the digest always reported "0/N" active agents.
+            const workingAgents = agents.filter(isWorking);
             const issues = await ctx.issues.list({ companyId: company.id, limit: 50 });
 
             const now = Date.now();
@@ -841,12 +844,16 @@ const plugin = definePlugin({
               "",
               `${escapeMarkdownV2("\u2705")} Tasks completed: *${completedToday.length}*`,
               `${escapeMarkdownV2("\ud83d\udccb")} Tasks created: *${createdToday.length}*`,
-              `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
+              `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${workingAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
             ];
 
-            if (activeAgents.length > 0) {
-              const topAgent = activeAgents[0]!.name;
-              lines.push(`${escapeMarkdownV2("\u2b50")} Top performer: *${escapeMarkdownV2(topAgent)}*`);
+            // The list is not ranked, so this names an agent that is working, not
+            // the best one. The old "Top performer" label was never seen because
+            // the filter above matched nothing; do not resurrect it as a claim
+            // the data cannot support.
+            if (workingAgents.length > 0) {
+              const workingAgent = workingAgents[0]!.name;
+              lines.push(`${escapeMarkdownV2("\u2b50")} Working: *${escapeMarkdownV2(workingAgent)}*`);
             }
 
             const formatIssueItem = (i: Issue) => {
