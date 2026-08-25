@@ -50,6 +50,7 @@ import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
 import { validateSecretRefFields, normalizeSecretRef } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
+import { isWorking } from "./agent-status.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import {
   SECRET_RESOLUTION_FAILED_MESSAGE,
@@ -1152,7 +1153,7 @@ const plugin = definePlugin({
 
         try {
           const agents = await ctx.agents.list({ companyId: company.id });
-          const activeAgents = agents.filter((a: Agent) => a.status === "active");
+          const workingAgents = agents.filter(isWorking);
           const issues = await ctx.issues.list({ companyId: company.id, limit: 50 });
 
           const now = Date.now();
@@ -1177,12 +1178,12 @@ const plugin = definePlugin({
             "",
             `${escapeMarkdownV2("\u2705")} Tasks completed: *${completedToday.length}*`,
             `${escapeMarkdownV2("\ud83d\udccb")} Tasks created: *${createdToday.length}*`,
-            `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${activeAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
+            `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${workingAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
           ];
 
-          if (activeAgents.length > 0) {
-            const topAgent = activeAgents[0]!.name;
-            lines.push(`${escapeMarkdownV2("\u2b50")} Top performer: *${escapeMarkdownV2(topAgent)}*`);
+          if (workingAgents.length > 0) {
+            const workingAgent = workingAgents[0]!.name;
+            lines.push(`${escapeMarkdownV2("\u2b50")} Working: *${escapeMarkdownV2(workingAgent)}*`);
           }
 
           const formatIssueItem = (i: Issue) => {
