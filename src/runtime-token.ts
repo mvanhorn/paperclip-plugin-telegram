@@ -8,13 +8,23 @@ export type TelegramRuntimeHealth = PluginHealthDiagnostics & {
 export const SECRET_RESOLUTION_DISABLED_MESSAGE = "Plugin secret references are disabled until company-scoped plugin config lands";
 export const SECRET_RESOLUTION_ISSUE_URL = "https://github.com/mvanhorn/paperclip-plugin-telegram/issues/63";
 
-export async function resolveStartupTelegramBotToken(
+/**
+ * Resolve the Telegram bot token secret for a company-scoped configuration
+ * delivery.
+ *
+ * Called from `onConfigChanged`, never from `setup()` — an unscoped
+ * `ctx.secrets.resolve()` throws "company context is required" on governed
+ * hosts (paperclipai/paperclip#9557), so this must always run with the
+ * companyId the delivery was attributed to.
+ */
+export async function resolveTelegramBotToken(
   ctx: PluginContext,
   tokenRef: string,
   setHealth: (health: TelegramRuntimeHealth) => void,
+  companyId?: string,
 ): Promise<string | undefined> {
   try {
-    const token = await ctx.secrets.resolve(tokenRef);
+    const token = await ctx.secrets.resolve(tokenRef, { companyId });
     setHealth({ status: "ok" });
     return token;
   } catch (err) {

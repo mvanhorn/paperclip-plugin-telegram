@@ -3,28 +3,29 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   SECRET_RESOLUTION_DISABLED_MESSAGE,
   SECRET_RESOLUTION_ISSUE_URL,
-  resolveStartupTelegramBotToken,
+  resolveTelegramBotToken,
   type TelegramRuntimeHealth,
 } from "../src/runtime-token.js";
 
-function makeContext(resolve: () => Promise<string>): PluginContext {
+function makeContext(resolve: (...args: unknown[]) => Promise<string>): PluginContext {
   return {
-    secrets: { resolve },
+    secrets: { resolve: vi.fn(resolve) },
     logger: {
       error: vi.fn(),
     },
   } as unknown as PluginContext;
 }
 
-describe("resolveStartupTelegramBotToken", () => {
+describe("resolveTelegramBotToken", () => {
   it("returns the resolved bot token and marks health ok", async () => {
     const health: TelegramRuntimeHealth[] = [];
     const ctx = makeContext(async () => "bot-token");
 
-    const token = await resolveStartupTelegramBotToken(ctx, "secret-ref", (next) => health.push(next));
+    const token = await resolveTelegramBotToken(ctx, "secret-ref", (next) => health.push(next), "company-1");
 
     expect(token).toBe("bot-token");
     expect(health).toEqual([{ status: "ok" }]);
+    expect(ctx.secrets.resolve).toHaveBeenCalledWith("secret-ref", { companyId: "company-1" });
   });
 
   it("degrades health and does not throw when Paperclip secret resolution fails", async () => {
@@ -33,7 +34,7 @@ describe("resolveStartupTelegramBotToken", () => {
       throw new Error(SECRET_RESOLUTION_DISABLED_MESSAGE);
     });
 
-    const token = await resolveStartupTelegramBotToken(ctx, "secret-ref", (next) => health.push(next));
+    const token = await resolveTelegramBotToken(ctx, "secret-ref", (next) => health.push(next), "company-1");
 
     expect(token).toBeUndefined();
     expect(health).toEqual([{

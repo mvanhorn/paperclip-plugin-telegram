@@ -70,11 +70,23 @@ type OutputQueueEntry = {
 
 // --- Setup: register ACP output listener ---
 
+/**
+ * `resolveToken` is called per-delivery rather than a token captured once:
+ * setup() runs before any configuration is available (see worker.ts's
+ * deliveries-only bootstrap), so the token this listener needs can only be
+ * read from the runtime that `onConfigChanged` builds later, and can change
+ * whenever the plugin's bot token is rotated.
+ */
 export function setupAcpOutputListener(
   ctx: PluginContext,
-  token: string,
+  resolveToken: () => string | null,
 ): void {
   ctx.events.on(ACP_OUTPUT_EVENT, async (event) => {
+    const token = resolveToken();
+    if (!token) {
+      ctx.logger.warn("Skipping ACP output because the Telegram plugin has no active runtime yet");
+      return;
+    }
     const payload = event.payload as AcpOutputEvent;
     await handleAcpOutput(ctx, token, payload);
   });
