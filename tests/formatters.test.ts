@@ -234,6 +234,38 @@ describe("formatAgentError", () => {
     expect(msg.text).toContain("Deployer");
     expect(msg.text).not.toContain("Agent ID:");
   });
+
+  it("adds a distinct Full error button when the message is truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard![0];
+    const fullError = buttons.find((b) => b.text === "Full error ↗");
+    const viewRun = buttons.find((b) => b.text === "View Run ↗");
+    expect(fullError).toBeDefined();
+    expect(fullError!.url).toBe("https://app.example.com/agents/agent-1/runs/run-1");
+    expect(viewRun).toBeDefined();
+  });
+
+  it("omits the Full error button when the message is not truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "short error", runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard?.[0] ?? [];
+    expect(buttons.find((b) => b.text === "Full error ↗")).toBeUndefined();
+    expect(buttons.find((b) => b.text === "View Run ↗")).toBeDefined();
+  });
+
+  it("omits the Full error button when there is no runId to link to, even if truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: undefined }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard?.[0] ?? [];
+    expect(buttons.find((b) => b.text === "Full error ↗")).toBeUndefined();
+  });
 });
 
 describe("formatAgentRunStarted", () => {

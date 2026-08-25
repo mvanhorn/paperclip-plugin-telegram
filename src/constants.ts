@@ -48,6 +48,12 @@ export const DEFAULT_CONFIG = {
 
 export const AGENT_ERROR_DEDUPLICATION_WINDOW_MS = 30 * 60 * 1000;
 
+// Cutoff for the error text shown inline in an agent-error notification.
+// formatAgentError truncates at this length and, when it does, adds a
+// distinct "Full error" button rather than relying on "View Run" to double
+// as the link back to the untruncated text (BLA-362).
+export const AGENT_ERROR_TRUNCATE_LENGTH = 500;
+
 export const MAX_CONVERSATION_TURNS = 50;
 export const DEFAULT_CONVERSATION_TURNS = 10;
 
