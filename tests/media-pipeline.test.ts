@@ -48,7 +48,7 @@ function mockCtx(): PluginContext {
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     events: {
-      emit: vi.fn((event: string, companyId: string, payload: unknown) => {
+      emit: vi.fn(async (event: string, companyId: string, payload: unknown) => {
         emittedEvents.push({ event, companyId, payload });
       }),
     },
@@ -322,6 +322,40 @@ describe("Media routing to agents in threads", () => {
       "[Document] (no caption)",
       "media_message",
       "project-1",
+    );
+  });
+});
+
+// `ctx.events.emit` is a host RPC (Promise<void>). This runs inside
+// handleUpdate's call graph, so an uncaught rejection would wedge Telegram
+// polling for every chat — it must be logged, not left to propagate or drop.
+describe("Media routing - events.emit rejection is caught, not dropped or propagated", () => {
+  it("logs and swallows a rejected acp-spawn emit for a media message", async () => {
+    stateStore["sessions_456_42"] = [{
+      sessionId: "s1",
+      agentId: "a1",
+      agentName: "builder",
+      agentDisplayName: "Builder",
+      transport: "acp",
+      spawnedAt: "2026-01-01T00:00:00Z",
+      status: "active",
+      lastActivityAt: "2026-01-01T00:00:00Z",
+    }];
+
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+
+    await expect(handleMediaMessage(ctx, "token", {
+      message_id: 1,
+      chat: { id: 456 },
+      message_thread_id: 42,
+      document: { file_id: "doc-1", file_name: "file.txt", mime_type: "text/plain" },
+      caption: "Check this",
+    }, { ...defaultConfig, briefAgentChatIds: [] }, "company-1")).resolves.toBe(true);
+
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn for media message",
+      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
     );
   });
 });
