@@ -30,6 +30,22 @@ describe("isValidSecretRef", () => {
     expect(isValidSecretRef("12f7ed4a-1234-4d0c-9abc-bd58d44d15e")).toBe(false);
     expect(isValidSecretRef("12f7ed4a12344d0c9abcbd58d44d15e1")).toBe(false);
   });
+
+  it("accepts the object shape current hosts resolve secret refs to", () => {
+    expect(isValidSecretRef({ type: "secret_ref", secretId: VALID_UUID })).toBe(true);
+  });
+
+  it("accepts the object shape with an optional version", () => {
+    expect(isValidSecretRef({ type: "secret_ref", secretId: VALID_UUID, version: 3 })).toBe(true);
+  });
+
+  it("rejects object shapes missing the secret_ref discriminant or a valid secretId", () => {
+    expect(isValidSecretRef({ secretId: VALID_UUID })).toBe(false);
+    expect(isValidSecretRef({ type: "other", secretId: VALID_UUID })).toBe(false);
+    expect(isValidSecretRef({ type: "secret_ref", secretId: "not-a-uuid" })).toBe(false);
+    expect(isValidSecretRef({ type: "secret_ref" })).toBe(false);
+    expect(isValidSecretRef(null)).toBe(false);
+  });
 });
 
 describe("validateSecretRefFields", () => {
@@ -93,5 +109,14 @@ describe("validateSecretRefFields", () => {
       telegramBotTokenRef: { id: VALID_UUID } as unknown as string,
     });
     expect(errors[0]).toContain("<object>");
+  });
+
+  it("returns no errors when the host resolves refs to the secret_ref object shape", () => {
+    expect(
+      validateSecretRefFields({
+        telegramBotTokenRef: { type: "secret_ref", secretId: VALID_UUID },
+        paperclipBoardApiTokenRef: { type: "secret_ref", secretId: VALID_UUID_2, version: 1 },
+      }),
+    ).toEqual([]);
   });
 });
