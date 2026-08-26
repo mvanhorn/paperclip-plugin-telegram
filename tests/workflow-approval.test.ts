@@ -28,7 +28,7 @@ const { tryCustomCommand, isWorkflowApprovalCallback, resolveWorkflowApprovalCal
   await import("../src/command-registry.js");
 
 /**
- * BLA-156. `wait_approval` sent Approve/Reject buttons whose callbacks were
+ * Regression test. `wait_approval` sent Approve/Reject buttons whose callbacks were
  * handled nowhere — and, worse, the executor did not stop at the gate. It
  * pushed the step's result and carried straight on, so every step the approval
  * existed to hold back ran anyway. The button was decorative.
