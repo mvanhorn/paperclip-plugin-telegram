@@ -67,7 +67,7 @@ function runButton(agentId: string, runId: string | null, publicUrl?: string): {
 
 // Distinct from runButton: surfaced only when the inline error text was cut,
 // so the affordance for "see the rest of this" doesn't ride on a button
-// whose stated purpose is the run dashboard, not the raw error (BLA-362).
+// whose stated purpose is the run dashboard, not the raw error.
 function fullErrorButton(agentId: string, runId: string | null, publicUrl?: string): { text: string; url: string } | null {
   if (publicUrl && isExternalUrl(publicUrl) && runId) {
     return { text: "Full error ↗", url: `${publicUrl}/agents/${agentId}/runs/${runId}` };
