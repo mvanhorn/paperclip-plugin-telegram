@@ -4,7 +4,7 @@ import { handleAcpOutput, routeMessageToAgent } from "../src/acp-bridge.js";
 import { ACP_SPAWN_EVENT } from "../src/constants.js";
 
 /**
- * BLA-162: the bridge used to resolve an unlinked chat's company id to the raw
+ * Regression test: the bridge used to resolve an unlinked chat's company id to the raw
  * Telegram `chatId`. Nothing threw and nothing logged, so the failure surfaced
  * only as host calls that could never succeed — and the discussion loop
  * re-resolved once per turn, spending a fake id on every remaining turn.
