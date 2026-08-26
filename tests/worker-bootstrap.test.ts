@@ -334,4 +334,92 @@ describe("worker deliveries-only bootstrap", () => {
 
     await expect(emit(registered, "plugin.stopping", undefined)).resolves.toBeUndefined();
   });
+
+  // Telegram allows only one live getUpdates consumer per bot token; a second
+  // concurrent long-poll gets a 409. pollUpdates has no restart-on-config-change
+  // logic to guard against that risk -- it starts exactly once (`pollingActive`
+  // in bootstrapRuntime) and re-reads `runtime` fresh at the top of every tick
+  // instead. That means a token rotation arriving while a getUpdates call is
+  // still in flight can never spin up a second loop; it only changes what the
+  // *next* tick sends. This test races exactly that: a rotation lands mid-flight
+  // and asserts no second getUpdates call is ever made, the in-flight (stale)
+  // response is handled exactly once, and the following tick is the first to
+  // use the rotated token.
+  it("never starts a second getUpdates call when a token rotates while one is in flight", async () => {
+    const { plugin } = await import("../src/worker.js");
+    const configA = { telegramBotTokenRef: "ref-a", enableInbound: true, enableCommands: true };
+    const configB = { telegramBotTokenRef: "ref-b", enableInbound: true, enableCommands: true };
+    const { ctx } = makeCtx({
+      companies: [{ id: "company-a" }],
+      configByCompany: { "company-a": configA },
+      resolveSecret: async (ref: string) => (ref === "ref-a" ? "bot-token-a" : "bot-token-b"),
+    });
+
+    const fetchUrls: string[] = [];
+    let resolveFirstFetch!: (value: { json: () => Promise<unknown> }) => void;
+    const firstFetch = new Promise<{ json: () => Promise<unknown> }>((resolve) => {
+      resolveFirstFetch = resolve;
+    });
+    (ctx.http.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      fetchUrls.push(url);
+      // First call: held open, simulating Telegram's in-flight long-poll.
+      // Every later call: parked forever -- the test only needs to observe
+      // that it happened, never that it resolves.
+      return fetchUrls.length === 1 ? firstFetch : new Promise(() => {});
+    });
+
+    await plugin.definition.setup(ctx);
+    await plugin.definition.onConfigChanged!(configA);
+
+    // Let pollUpdates take its first tick: it reads runtime (token A) and is
+    // now suspended awaiting the deferred getUpdates response.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchUrls).toHaveLength(1);
+    expect(fetchUrls[0]).toContain("bot-token-a");
+
+    // Token rotation mid-flight. Same company, so this is an in-place
+    // refresh -- allowed unconditionally -- and takes effect in `runtime`
+    // immediately, while the token-A getUpdates call above is still pending.
+    (ctx.config.get as ReturnType<typeof vi.fn>).mockImplementation(async (id?: string) =>
+      id === "company-a" ? configB : (() => { throw new Error("denied"); })(),
+    );
+    await plugin.definition.onConfigChanged!(configB);
+
+    // The 409-avoidance property: rotating the token never fires a second,
+    // concurrent getUpdates call while the first is still outstanding.
+    expect(fetchUrls).toHaveLength(1);
+
+    // Resolve the stale (pre-rotation) call with an update.
+    resolveFirstFetch({
+      json: async () => ({
+        ok: true,
+        result: [
+          {
+            update_id: 5,
+            message: {
+              message_id: 1,
+              chat: { id: 111, type: "private" },
+              text: "/help",
+              entities: [{ type: "bot_command", offset: 0, length: 5 }],
+            },
+          },
+        ],
+      }),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Handled exactly once -- not dropped, not double-processed -- and the
+    // offset it carries is persisted exactly once.
+    expect(sentMessages).toHaveLength(1);
+    expect(ctx.state.set).toHaveBeenCalledTimes(1);
+    expect(ctx.state.set).toHaveBeenCalledWith(
+      expect.objectContaining({ stateKey: "telegram-last-update-id" }),
+      5,
+    );
+
+    // The next tick is the first to read the rotated token -- confirming the
+    // rotation was deferred to the next iteration, not lost.
+    expect(fetchUrls).toHaveLength(2);
+    expect(fetchUrls[1]).toContain("bot-token-b");
+  });
 });
