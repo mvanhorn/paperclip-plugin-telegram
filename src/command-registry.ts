@@ -106,6 +106,11 @@ type ParkedWorkflow = {
   messageThreadId?: number;
   companyId: string;
   createdAt: number;
+  // Set in place of deleting the row outright: writing a JS `null` value hits
+  // a NOT NULL constraint on plugin_state.value_json at the platform layer
+  // (BLA-606) and throws before either Telegram call below ever runs, so the
+  // button silently does nothing. A sentinel object keeps the write valid.
+  resolved?: boolean;
 };
 
 function approvalStateKey(approvalId: string): string {
@@ -577,14 +582,14 @@ export async function resolveWorkflowApprovalCallback(
     stateKey,
   }) as ParkedWorkflow | null;
 
-  if (!parked) {
+  if (!parked || parked.resolved) {
     // Already decided, or from a build before the continuation was persisted.
     // Saying so beats silence, which would read as the button doing nothing.
     await answerCallbackQuery(ctx, token, callbackQueryId, "This approval is no longer pending.");
     return;
   }
 
-  await ctx.state.set({ scopeKind: "instance", stateKey }, null);
+  await ctx.state.set({ scopeKind: "instance", stateKey }, { ...parked, resolved: true });
 
   if (!approved) {
     await answerCallbackQuery(ctx, token, callbackQueryId, "Rejected");
@@ -601,7 +606,13 @@ export async function resolveWorkflowApprovalCallback(
 
   await answerCallbackQuery(ctx, token, callbackQueryId, "Approved");
   if (messageId) {
-    await editMessage(ctx, token, parked.chatId, messageId, `Approved by ${actor}. Continuing.`);
+    const edited = await editMessage(ctx, token, parked.chatId, messageId, `Approved by ${actor}. Continuing.`);
+    if (!edited) {
+      ctx.logger.error("editMessage after approval failed", {
+        chatId: parked.chatId,
+        messageId,
+      });
+    }
   }
 
   const commands = await getCommandRegistry(ctx, parked.companyId);

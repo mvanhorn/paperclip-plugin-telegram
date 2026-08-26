@@ -132,7 +132,7 @@ export async function answerCallbackQuery(
   text: string,
 ): Promise<void> {
   try {
-    await ctx.http.fetch(`${TELEGRAM_API}/bot${token}/answerCallbackQuery`, {
+    const res = await ctx.http.fetch(`${TELEGRAM_API}/bot${token}/answerCallbackQuery`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -140,6 +140,14 @@ export async function answerCallbackQuery(
         text,
       }),
     });
+    const data = (await res.json()) as { ok: boolean; description?: string; error_code?: number };
+    if (!data.ok) {
+      ctx.logger.error("Telegram answerCallbackQuery rejected", {
+        callbackQueryId,
+        error_code: data.error_code,
+        description: data.description,
+      });
+    }
   } catch (err) {
     ctx.logger.error("Telegram answerCallbackQuery failed", { error: String(err) });
   }
