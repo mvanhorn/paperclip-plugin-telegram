@@ -278,7 +278,7 @@ describe("formatAgentRunFinished", () => {
   });
 });
 
-// BLA-344: event/tool payloads arrive as `Record<string, unknown>` off the
+// Regression test: event/tool payloads arrive as `Record<string, unknown>` off the
 // wire. A field that turns out to be an object rather than a primitive must
 // never reach `String()` directly, or the Telegram message renders the
 // literal text "[object Object]" instead of failing loudly.
