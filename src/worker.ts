@@ -41,22 +41,17 @@ import {
   persistTelegramUpdateOffset,
   processTelegramUpdateBatch,
 } from "./polling-offset.js";
-import { getTelegramUpdateChatId, selectTelegramRuntimeForUpdate } from "./polling-dispatch.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
-import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.js";
+import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, DEFAULT_CONFIG, METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
-import { validateSecretRefFields, normalizeSecretRef } from "./secret-ref-validation.js";
+import { normalizeSecretRef, validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { isWorking } from "./agent-status.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
-import {
-  SECRET_RESOLUTION_FAILED_MESSAGE,
-  type TelegramRuntimeHealth,
-} from "./runtime-token.js";
-import { loadStartupConfig, resolveCompatibleConfig } from "./config-compat.js";
+import { resolveTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -153,7 +148,65 @@ type TelegramBoardAccessRegistration = TelegramBoardAccessState & {
   configured: boolean;
 };
 
-let runtimeHealth: TelegramRuntimeHealth = { status: "ok" };
+// ---------------------------------------------------------------------------
+// Runtime state
+// ---------------------------------------------------------------------------
+//
+// setup() runs OUTSIDE any company scope. Since paperclipai/paperclip#9557 the
+// SDK's governed-access gate requires a company scope for `config.get()` and
+// `secrets.resolve()`, so a worker cannot read its own configuration while it
+// starts: an unscoped call in setup() throws "company context is required"
+// and kills activation (paperclip-plugin-telegram#77).
+//
+// setup() therefore only registers handlers, unconditionally. Everything that
+// needs config or a secret lives in `runtime`, and `onConfigChanged` is the
+// ONLY thing that builds or refreshes it — the host delivers stored
+// configuration with a company scope at worker start and on every save. A
+// handler that fires before any delivery has happened has nothing to serve
+// and no-ops via `ensureRuntime()`.
+//
+// The installed SDK (2026.722.0) calls `onConfigChanged(newConfig)` with no
+// company scope attached, even though the host binds the RPC invocation to
+// the real company and denies a read for any other one. `identifyDeliveredCompany`
+// probes for the scope from inside the invocation instead of guessing.
+//
+// This plugin's bot token and defaultChatId are a single shared instance
+// config — exactly one company can own the *storage* that config lives in on
+// a governed host, mirrored here as `ownerCompanyId`. That is unrelated to
+// which companies the plugin *serves*: `/connect` already lets many companies
+// route their own chat to their own company via per-company chat-mapping
+// state, and `notify()` below dispatches events from any companyId. Ownership
+// only decides whose configuration delivery built `runtime`; refusing a
+// second company's *events* would break that existing multi-company routing.
+let _pluginCtx: PluginContext | null = null;
+let runtime: TelegramRuntime | null = null;
+let runtimeHealth: TelegramRuntimeHealth = {
+  status: "degraded",
+  message: "Waiting for company-scoped configuration from the host",
+};
+let ownerCompanyId: string | null = null;
+let ownerConfigJson: string | null = null;
+const refusedCompanies = new Set<string>();
+let bootstrapQueue: Promise<void> = Promise.resolve();
+let pollingActive = false;
+
+type TelegramRuntime = {
+  companyId: string;
+  config: TelegramConfig;
+  token: string;
+  baseUrl: string;
+  publicUrl: string;
+};
+
+// Process-lifetime singletons. None of these depend on delivered config, so
+// hoisting them out of setup() (where they used to be created once, the same
+// way, since setup() only ever ran once) changes nothing about their
+// behavior.
+const escalationManager = new EscalationManager();
+const issuePrefixCache = new Map<string, string>();
+const doneDedupe = makeUpdateDedupe();
+const assignmentDedupe = makeUpdateDedupe();
+const agentErrorDedupe = makeUpdateDedupe(AGENT_ERROR_DEDUPLICATION_WINDOW_MS, 1000);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -161,14 +214,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-async function resolveConfig(
-  ctx: PluginContext,
-  fallback: TelegramConfig,
-  companyId?: string | null,
-): Promise<TelegramConfig> {
-  return resolveCompatibleConfig(ctx, fallback as unknown as Record<string, unknown>, companyId) as Promise<TelegramConfig>;
 }
 
 function normalizeBoardAccessState(value: unknown): TelegramBoardAccessState {
@@ -236,17 +281,9 @@ async function resolveBoardApiToken(
     if (seen.has(candidate.ref)) continue;
     seen.add(candidate.ref);
     try {
-      // The board-access state persists a bare UUID, which hosts requiring the
-      // object form reject outright — surfacing to the user as an unexplained
-      // 403 from whatever needed the token.
-      const ref = normalizeSecretRef(candidate.ref);
-      if (!ref) {
-        ctx.logger.warn("Board API token ref is not a usable secret reference", {
-          source: candidate.source,
-        });
-        continue;
-      }
-      return await ctx.secrets.resolve(ref as unknown as string, {
+      const normalizedRef = normalizeSecretRef(candidate.ref);
+      if (!normalizedRef) continue;
+      return await ctx.secrets.resolve(normalizedRef as string, {
         companyId: companyId ?? undefined,
         configPath: candidate.source === "config" ? "paperclipBoardApiTokenRef" : undefined,
       });
@@ -262,191 +299,6 @@ async function resolveBoardApiToken(
   return undefined;
 }
 
-async function resolveTelegramBotToken(
-  ctx: PluginContext,
-  config: TelegramConfig,
-  companyId?: string | null,
-): Promise<string | null> {
-  const effectiveConfig = companyId ? await resolveConfig(ctx, config, companyId) : config;
-  const tokenRef = effectiveConfig.telegramBotTokenRef;
-  if (!tokenRef) return null;
-
-  return resolveTelegramBotTokenRef(ctx, tokenRef, companyId);
-}
-
-async function resolveTelegramBotTokenRef(
-  ctx: PluginContext,
-  tokenRef: unknown,
-  companyId?: string | null,
-): Promise<string | null> {
-  if (!companyId) {
-    ctx.logger.warn("Telegram bot token secret requires company context");
-    return null;
-  }
-
-  const normalizedRef = normalizeSecretRef(tokenRef);
-  if (!normalizedRef) {
-    ctx.logger.warn("Telegram bot token ref is not a usable secret reference", { companyId });
-    return null;
-  }
-
-  try {
-    return await ctx.secrets.resolve(normalizedRef as unknown as string, {
-      companyId,
-      configPath: "telegramBotTokenRef",
-    });
-  } catch (err) {
-    runtimeHealth = {
-      status: "degraded",
-      message: SECRET_RESOLUTION_FAILED_MESSAGE,
-      details: {
-        issue: "telegram-bot-token-resolution-failed",
-        companyId,
-        error: String(err),
-      },
-    };
-    ctx.logger.warn("Failed to resolve Telegram bot token secret", {
-      companyId,
-      error: String(err),
-    });
-    return null;
-  }
-}
-
-type TelegramCompanyRuntime = {
-  companyId: string;
-  config: TelegramConfig;
-  token: string;
-  baseUrl: string;
-  publicUrl: string;
-};
-
-type TelegramPollingRuntimeGroup = {
-  tokenRef: string;
-  token: string;
-  runtimes: TelegramCompanyRuntime[];
-};
-
-function secretRefKey(value: unknown): string | null {
-  const normalized = normalizeSecretRef(value);
-  if (!normalized) return null;
-  return typeof normalized === "string" ? normalized : normalized.secretId;
-}
-
-/**
- * Enumerate companies for startup, tolerating hosts where `companies.list` is
- * not callable from setup(). Falls back to the company id recorded in the
- * board-access state, which is written when board access is connected.
- */
-async function listCompaniesForStartup(ctx: PluginContext): Promise<Array<{ id: string }>> {
-  let listed: Array<{ id: string }> = [];
-  let listError: unknown = null;
-  try {
-    listed = await ctx.companies.list();
-  } catch (err) {
-    listError = err;
-  }
-
-  // An empty array is the common case, not the exception: on this host
-  // companies.list SUCCEEDS from setup() and returns [], because there is no
-  // invocation scope to enumerate companies against. Treating only a thrown
-  // error as failure leaves runtimes empty and silently disables polling.
-  if (listed.length > 0) return listed;
-
-  let fallbackCompanyId: string | null = null;
-  try {
-    fallbackCompanyId = (await loadBoardAccessState(ctx)).companyId;
-  } catch {
-    // board-access state is optional; absence just means no fallback
-  }
-
-  if (!fallbackCompanyId) {
-    ctx.logger.warn("companies.list yielded no companies at startup and no fallback company id is known", {
-      error: listError ? String(listError) : "empty result",
-    });
-    return [];
-  }
-
-  ctx.logger.info("companies.list yielded no companies at startup; using the company id from board-access state", {
-    companyId: fallbackCompanyId,
-    reason: listError ? String(listError) : "empty result",
-  });
-  return [{ id: fallbackCompanyId }];
-}
-
-export async function resolveCompanyRuntimes(
-  ctx: PluginContext,
-  startupConfig: TelegramConfig,
-  predicate: (config: TelegramConfig) => boolean,
-): Promise<TelegramCompanyRuntime[]> {
-  // `ctx.companies.list()` is the natural way to enumerate companies, but it is
-  // not reliable from setup(): on hosts that enforce per-invocation scoping it
-  // can fail with "the worker referenced a missing, expired, or unknown
-  // invocation scope" (paperclipai/paperclip#9368, #11163). setup() runs
-  // outside any host-issued invocation, and the failure is order-dependent —
-  // an earlier failed host call makes the next one fail this way.
-  //
-  // When that happens the runtime list comes back empty and long polling is
-  // never started, so every inbound feature (commands, reply routing,
-  // approve/reject) is silently dead for the worker's life — there is no retry.
-  //
-  // Discovery is not actually required: the company is already known from the
-  // stored board-access state. Fall back to it rather than lose inbound.
-  const companies = await listCompaniesForStartup(ctx);
-  const runtimes: TelegramCompanyRuntime[] = [];
-
-  for (const company of companies) {
-    let scopedConfig: Record<string, unknown>;
-    try {
-      scopedConfig = await ctx.config.get(company.id);
-    } catch (err) {
-      ctx.logger.warn("Company-scoped Telegram plugin config unavailable; skipping company runtime", {
-        companyId: company.id,
-        error: String(err),
-      });
-      continue;
-    }
-    if (!("telegramBotTokenRef" in scopedConfig)) continue;
-
-    const effectiveConfig = { ...startupConfig, ...scopedConfig } as unknown as TelegramConfig;
-    const hasCompanyTelegramRoute = [
-      "defaultChatId",
-      "approvalsChatId",
-      "approvalsTopicId",
-      "errorsChatId",
-      "errorsTopicId",
-      "digestChatId",
-      "digestTopicId",
-      "escalationChatId",
-    ].some((key) => {
-      const value = effectiveConfig[key as keyof TelegramConfig];
-      const startupValue = startupConfig[key as keyof TelegramConfig];
-      return typeof value === "string" && value.trim() && value !== startupValue;
-    }) || secretRefKey(effectiveConfig.telegramBotTokenRef) !== null;
-    if (!hasCompanyTelegramRoute) continue;
-
-    if (!predicate(effectiveConfig)) continue;
-
-    const tokenRef = effectiveConfig.telegramBotTokenRef;
-    if (!tokenRef) continue;
-
-    const token = await resolveTelegramBotTokenRef(ctx, tokenRef, company.id);
-    if (!token) continue;
-
-    const baseUrl = effectiveConfig.paperclipBaseUrl || startupConfig.paperclipBaseUrl || "http://localhost:3100";
-    const publicUrl = effectiveConfig.paperclipPublicUrl || baseUrl;
-    runtimes.push({
-      companyId: company.id,
-      config: effectiveConfig,
-      token,
-      baseUrl,
-      publicUrl,
-    });
-  }
-
-  return runtimes;
-}
-
 async function resolveCallbackCompanyId(
   ctx: PluginContext,
   query: NonNullable<TelegramUpdate["callback_query"]>,
@@ -460,10 +312,7 @@ async function resolveCallbackCompanyId(
     stateKey: `msg_${chatId}_${messageId}`,
   }) as { companyId?: string } | null;
 
-  if (mapping?.companyId) return mapping.companyId;
-
-  const boardAccessState = await loadBoardAccessState(ctx);
-  return boardAccessState.companyId ?? null;
+  return mapping?.companyId ?? null;
 }
 
 /**
@@ -541,53 +390,6 @@ async function resolveDigestThreadId(
   return await isForum(ctx, token, chatId) ? GENERAL_TOPIC_THREAD_ID : undefined;
 }
 
-function resolveDigestMode(config: TelegramConfig): TelegramConfig["digestMode"] {
-  return (config as Record<string, unknown>).dailyDigestEnabled === true && config.digestMode === "off"
-    ? "daily"
-    : config.digestMode ?? "off";
-}
-
-function parseDigestTime(value: string | undefined): { hour: number; minute: number } | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const match = /^(\d{1,2})(?::(\d{2}))?$/.exec(trimmed);
-  if (!match) return null;
-  const hour = Number(match[1]);
-  const minute = match[2] === undefined ? 0 : Number(match[2]);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return { hour, minute };
-}
-
-function digestTimesForConfig(config: TelegramConfig): Array<{ hour: number; minute: number }> {
-  const mode = resolveDigestMode(config);
-  if (mode === "off") return [];
-  if (mode === "daily") {
-    return [parseDigestTime(config.dailyDigestTime)].filter((time): time is { hour: number; minute: number } => Boolean(time));
-  }
-  if (mode === "bidaily") {
-    return [parseDigestTime(config.dailyDigestTime), parseDigestTime(config.bidailySecondTime)]
-      .filter((time): time is { hour: number; minute: number } => Boolean(time));
-  }
-  return (config.tridailyTimes || "07:00,13:00,19:00")
-    .split(",")
-    .map((time) => parseDigestTime(time))
-    .filter((time): time is { hour: number; minute: number } => Boolean(time));
-}
-
-function resolveDigestSlot(
-  config: TelegramConfig,
-  date: Date,
-): { dateKey: string; timeKey: string } | null {
-  const hour = date.getUTCHours();
-  const minute = date.getUTCMinutes();
-  const match = digestTimesForConfig(config).find((time) => time.hour === hour && time.minute === minute);
-  if (!match) return null;
-  const dateKey = date.toISOString().slice(0, 10);
-  const timeKey = `${String(match.hour).padStart(2, "0")}:${String(match.minute).padStart(2, "0")}`;
-  return { dateKey, timeKey };
-}
-
 async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<string> {
   const mapping = await ctx.state.get({
     scopeKind: "instance",
@@ -613,23 +415,392 @@ async function resolveCompanyIdOrNull(ctx: PluginContext, chatId: string): Promi
   }
 }
 
-const plugin = definePlugin({
-  async setup(ctx) {
-    // Resolve the company BEFORE loading config. An unscoped ctx.config.get()
-    // fails from setup() on scope-enforcing hosts, and the silent fallback to
-    // defaults leaves paperclipBoardApiTokenRef unset — which surfaces much
-    // later, and intermittently, as a bare 403 from whatever needed the board
-    // token. Knowing the company up front turns that into a scoped retry.
-    const startupCompanies = await listCompaniesForStartup(ctx);
-    const rawConfig = await loadStartupConfig(
-      ctx,
-      {} as Record<string, unknown>,
-      startupCompanies[0]?.id ?? null,
+/** Deterministic enough to compare two deliveries for the equal-config rule below. */
+function stableConfigJson(config: unknown): string {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, entry]) => [key, normalize(entry)]),
+      );
+    }
+    return value;
+  };
+  return JSON.stringify(normalize(config ?? null));
+}
+
+/**
+ * Decide whether a configuration delivery for `companyId` may (re)build the
+ * runtime.
+ *
+ * - No owner yet → this company becomes the owner.
+ * - Same owner → always allowed (refresh in place).
+ * - Different company, byte-identical config → ownership advances. This is
+ *   what resolves duplicated-config deliveries from a host migration (the
+ *   scenario upstream maintainer flagged for paperclip-plugin-telegram#61):
+ *   instead of the two companies fighting over a shared runtime, the second
+ *   identical delivery is treated as the same install moving, not a rival.
+ * - Different company, different config → refused; the current owner's
+ *   runtime is left untouched, logged once per refused company.
+ */
+function claimOwnership(ctx: PluginContext, companyId: string, config: unknown): boolean {
+  const configJson = stableConfigJson(config);
+
+  if (!ownerCompanyId) {
+    ownerCompanyId = companyId;
+    ownerConfigJson = configJson;
+    return true;
+  }
+
+  if (ownerCompanyId === companyId) {
+    ownerConfigJson = configJson;
+    return true;
+  }
+
+  if (ownerConfigJson !== null && ownerConfigJson === configJson) {
+    ctx.logger.info(
+      `Telegram plugin owner advancing from company ${ownerCompanyId} to ${companyId}: identical configuration`,
+      { previousCompanyId: ownerCompanyId, companyId },
     );
-    ctx.logger.info("Telegram plugin config loaded");
-    const config = rawConfig as unknown as TelegramConfig;
-    const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
-    const publicUrl = config.paperclipPublicUrl || baseUrl;
+    ownerCompanyId = companyId;
+    ownerConfigJson = configJson;
+    refusedCompanies.delete(companyId);
+    return true;
+  }
+
+  if (!refusedCompanies.has(companyId)) {
+    refusedCompanies.add(companyId);
+    ctx.logger.warn(
+      `Telegram plugin ignoring configuration for company ${companyId}; this install's config is owned by ${ownerCompanyId}`,
+      { ownerCompanyId, deliveredCompanyId: companyId },
+    );
+  }
+  return false;
+}
+
+/** Run one bootstrap attempt inside the ordered critical section every delivery shares. */
+function queueBootstrap<T>(work: () => Promise<T>): Promise<T> {
+  const next = bootstrapQueue.then(work, work);
+  bootstrapQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+/**
+ * The current runtime, or null before any configuration has been delivered.
+ *
+ * Read-only: this never bootstraps and never reads config. Every handler
+ * calls this first and no-ops on null instead of trying to build a runtime
+ * itself — only `onConfigChanged` does that (see "Runtime state" above).
+ */
+function ensureRuntime(): TelegramRuntime | null {
+  return runtime;
+}
+
+/**
+ * On the installed SDK (2026.722.0), `onConfigChanged` is not told which
+ * company's configuration was delivered — only the host's RPC binding knows,
+ * and it denies a scoped read for any other company. Probing each company's
+ * scoped config from inside this invocation identifies the delivery: only
+ * the real one answers.
+ */
+async function identifyDeliveredCompany(
+  ctx: PluginContext,
+  deliveredConfig: unknown,
+): Promise<string | null> {
+  let companies: Array<{ id: string }>;
+  try {
+    companies = await ctx.companies.list();
+  } catch (err) {
+    ctx.logger.info("Could not list companies while attributing a configuration delivery", {
+      error: String(err),
+    });
+    return null;
+  }
+
+  const readable: Array<{ id: string; config: Record<string, unknown> }> = [];
+  for (const company of companies) {
+    try {
+      const config = await ctx.config.get(company.id);
+      readable.push({ id: company.id, config });
+    } catch {
+      // Not this invocation's scope — expected for every company but one.
+    }
+  }
+
+  if (readable.length === 0) return null;
+  if (readable.length === 1) return readable[0]!.id;
+
+  // A host that answers for several companies is not telling us which one was
+  // saved; match the delivered bot-token reference against the readable rows.
+  const deliveredRef = asNonEmptyString(
+    (deliveredConfig as Record<string, unknown> | null)?.telegramBotTokenRef,
+  );
+  if (deliveredRef) {
+    const match = readable.find(
+      (row) => asNonEmptyString(row.config.telegramBotTokenRef) === deliveredRef,
+    );
+    if (match) return match.id;
+  }
+  return readable[0]!.id;
+}
+
+/**
+ * Apply one company's stored configuration to the runtime.
+ *
+ * Callers MUST go through `queueBootstrap` — nothing serializes host→worker
+ * RPC calls, so two config saves arriving close together could otherwise
+ * both pass `claimOwnership` and race to build `runtime`.
+ *
+ * Never throws: every failure path degrades health and returns null so a
+ * bad or not-yet-complete delivery cannot crash worker.
+ */
+async function bootstrapRuntime(
+  ctx: PluginContext,
+  companyId: string,
+  rawConfig: unknown,
+): Promise<TelegramRuntime | null> {
+  if (!claimOwnership(ctx, companyId, rawConfig)) return runtime;
+
+  const config = {
+    ...DEFAULT_CONFIG,
+    ...(isRecord(rawConfig) ? rawConfig : {}),
+  } as TelegramConfig;
+  const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
+  const publicUrl = config.paperclipPublicUrl || baseUrl;
+
+  if (!config.telegramBotTokenRef) {
+    ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled", { companyId });
+    runtime = null;
+    runtimeHealth = { status: "degraded", message: "No telegramBotTokenRef configured" };
+    return null;
+  }
+
+  const token = await resolveTelegramBotToken(
+    ctx,
+    config.telegramBotTokenRef,
+    (health) => { runtimeHealth = health; },
+    companyId,
+  );
+  if (!token) {
+    ctx.logger.warn("Telegram plugin runtime disabled because bot token could not be resolved", { companyId });
+    runtime = null;
+    return null;
+  }
+
+  runtime = { companyId, config, token, baseUrl, publicUrl };
+
+  // --- Register bot commands with Telegram ---
+  if (config.enableCommands) {
+    const allCommands = [
+      ...BOT_COMMANDS,
+      { command: "commands", description: "Manage custom workflow commands" },
+    ];
+    // Non-blocking: this runs from onConfigChanged, which the host also
+    // subjects to an RPC timeout, and api.telegram.org being slow must not
+    // fail a config save. Idempotent on Telegram's side, so re-registering on
+    // every delivery (including config-only refreshes) is harmless.
+    setMyCommands(ctx, token, allCommands)
+      .then((registered) => {
+        if (registered) {
+          ctx.logger.info("Bot commands registered with Telegram", { companyId });
+        }
+      })
+      .catch((err) => {
+        ctx.logger.error("Failed to register bot commands", { error: String(err) });
+      });
+  }
+
+  if (!pollingActive) {
+    pollingActive = true;
+    pollUpdates(ctx).catch((err) =>
+      ctx.logger.error("Polling loop crashed", { error: String(err) }),
+    );
+  }
+
+  ctx.logger.info("Telegram plugin runtime ready", { companyId });
+  return runtime;
+}
+
+/**
+ * Long-polls Telegram for inbound updates. Started once, the first time a
+ * configuration delivery resolves a usable bot token, and runs for the life
+ * of the worker process (stopped only by `plugin.stopping`).
+ *
+ * Reads `runtime` fresh on every iteration instead of closing over a token or
+ * config captured at start time: a bot-token rotation or a flag flip
+ * (enableCommands/enableInbound) takes effect on the next tick without
+ * needing to tear down and restart the loop, which long-polling has no
+ * persistent connection to tear down anyway.
+ */
+async function pollUpdates(ctx: PluginContext): Promise<void> {
+  ctx.logger.info("Telegram polling loop starting");
+  let lastUpdateId = await getPersistedTelegramUpdateOffset(ctx);
+  while (pollingActive) {
+    const rt = runtime;
+    if (!rt || !(rt.config.enableCommands || rt.config.enableInbound)) {
+      await new Promise((r) => setTimeout(r, 2000));
+      continue;
+    }
+    try {
+      ctx.logger.debug("Telegram poll tick", { lastUpdateId });
+      const res = await ctx.http.fetch(
+        `${TELEGRAM_API}/bot${rt.token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
+        { method: "GET" },
+      );
+      const data = (await res.json()) as {
+        ok: boolean;
+        result?: TelegramUpdate[];
+        description?: string;
+        error_code?: number;
+      };
+
+      if (data.ok && data.result) {
+        lastUpdateId = await processTelegramUpdateBatch({
+          updates: data.result,
+          lastUpdateId,
+          handleUpdate: (update) => handleUpdate(ctx, rt.token, rt.config, update, rt.baseUrl, rt.publicUrl),
+          persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
+          logger: ctx.logger,
+        });
+      } else {
+        ctx.logger.warn("Telegram getUpdates: unexpected response", {
+          ok: data.ok,
+          hasResult: !!data.result,
+          description: data.description,
+          error_code: data.error_code,
+        });
+        // ok:false (revoked token/401, 409 conflict, 429) returns immediately
+        // rather than honoring timeout=10, and fetch does not throw on non-2xx,
+        // so without this the loop spins hot — flooding logs and hammering
+        // Telegram. Back off 5s, mirroring the catch block below.
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    } catch (err) {
+      ctx.logger.error("Telegram polling error", { error: String(err) });
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+  ctx.logger.warn("Telegram polling loop exited", { pollingActive });
+}
+
+async function resolveIssueLinksOpts(ctx: PluginContext, publicUrl: string, companyId: string): Promise<IssueLinksOpts> {
+  let prefix = issuePrefixCache.get(companyId);
+  if (!prefix) {
+    const company = await ctx.companies.get(companyId);
+    prefix = company?.issuePrefix ?? "";
+    if (prefix) issuePrefixCache.set(companyId, prefix);
+  }
+  return { baseUrl: publicUrl, issuePrefix: prefix || undefined };
+}
+
+async function notify(
+  ctx: PluginContext,
+  rt: TelegramRuntime,
+  event: PluginEvent,
+  formatter: (e: PluginEvent, opts?: IssueLinksOpts) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
+  overrideChatId?: string,
+  overrideTopicId?: string,
+): Promise<void> {
+  const chatId = await resolveChat(
+    ctx,
+    event.companyId,
+    overrideChatId || rt.config.defaultChatId,
+  );
+  if (!chatId) return;
+  const linksOpts = await resolveIssueLinksOpts(ctx, rt.publicUrl, event.companyId);
+  const msg = formatter(event, linksOpts);
+
+  let messageThreadId = parseTopicId(overrideTopicId);
+  if (!messageThreadId) {
+    messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, rt.config.topicRouting);
+  }
+
+  if (messageThreadId) {
+    msg.options.messageThreadId = messageThreadId;
+  }
+
+  // Issue threading — if we've already sent a message for this entity in this
+  // chat+topic, reply to that anchor so all updates about a single entity stack
+  // as one Telegram thread on mobile (created → comments → done).
+  const anchorKey = event.entityId
+    ? `anchor_${chatId}_${event.entityType}_${event.entityId}`
+    : null;
+  if (anchorKey) {
+    const anchor = (await ctx.state.get({
+      scopeKind: "instance",
+      stateKey: anchorKey,
+    })) as { messageId: number; messageThreadId?: number } | null;
+    // Only thread when targeting the same topic — Telegram rejects cross-topic replies.
+    if (anchor?.messageId && anchor.messageThreadId === messageThreadId) {
+      msg.options.replyToMessageId = anchor.messageId;
+    }
+  }
+
+  const messageId = await sendMessage(ctx, rt.token, chatId, msg.text, msg.options);
+
+  if (messageId) {
+    await ctx.state.set(
+      {
+        scopeKind: "instance",
+        stateKey: `msg_${chatId}_${messageId}`,
+      },
+      {
+        entityId: event.entityId,
+        entityType: event.entityType,
+        companyId: event.companyId,
+        eventType: event.eventType,
+      },
+    );
+
+    await ctx.activity.log({
+      companyId: event.companyId,
+      message: `Forwarded ${event.eventType} to Telegram`,
+      entityType: "plugin",
+      entityId: event.entityId,
+    });
+
+    // First-message-per-entity: store the anchor so future notifications about the
+    // same entity reply to this one. Never overwritten — the first message stays root.
+    if (anchorKey) {
+      const existing = (await ctx.state.get({
+        scopeKind: "instance",
+        stateKey: anchorKey,
+      })) as { messageId: number; messageThreadId?: number } | null;
+      if (!existing) {
+        await ctx.state.set(
+          { scopeKind: "instance", stateKey: anchorKey },
+          { messageId, messageThreadId },
+        );
+      }
+    }
+  }
+}
+
+const enrichAgentName = async (ctx: PluginContext, event: PluginEvent) => {
+  const payload = event.payload as Record<string, unknown>;
+  if (payload.agentId && !payload.agentName) {
+    try {
+      const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+      if (agent) payload.agentName = agent.name;
+    } catch { /* best effort */ }
+  }
+};
+
+export const plugin = definePlugin({
+  async setup(ctx) {
+    _pluginCtx = ctx;
+
+    // Handlers are registered unconditionally. The feature flags that used to
+    // gate these registrations live in company-scoped config, which is
+    // unreadable here (see "Runtime state" above), and the SDK requires every
+    // registration to complete synchronously within setup(). Each handler
+    // therefore starts by resolving the runtime via `ensureRuntime()` and
+    // checking its own flag against the live config, no-oping until both exist.
 
     ctx.data.register("board-access.read", async () => getBoardAccessRegistration(await loadBoardAccessState(ctx)));
 
@@ -648,455 +819,179 @@ const plugin = definePlugin({
       });
     });
 
-    const pollingRuntimes = await resolveCompanyRuntimes(
-      ctx,
-      config,
-      (effectiveConfig) => Boolean(effectiveConfig.enableCommands || effectiveConfig.enableInbound),
-    );
-    if (pollingRuntimes.length === 0) {
-      ctx.logger.warn("No company-scoped Telegram bot token is resolvable during startup; setup will continue without polling");
-      runtimeHealth = {
-        status: "degraded",
-        message: "No company-scoped Telegram bot runtime could be resolved during startup",
-        details: {
-          issue: "no-telegram-runtime",
-        },
-      };
-    }
-
-    const commandRegistrationRefs = new Set<string>();
-    for (const runtime of pollingRuntimes) {
-      if (!runtime.config.enableCommands) continue;
-      const tokenRefKey = secretRefKey(runtime.config.telegramBotTokenRef);
-      if (!tokenRefKey || commandRegistrationRefs.has(tokenRefKey)) continue;
-      commandRegistrationRefs.add(tokenRefKey);
-
-      const allCommands = [
-        ...BOT_COMMANDS,
-        { command: "commands", description: "Manage custom workflow commands" },
-      ];
-      setMyCommands(ctx, runtime.token, allCommands)
-        .then((registered) => {
-          if (registered) {
-            ctx.logger.info("Bot commands registered with Telegram", { companyId: runtime.companyId });
-          }
-        })
-        .catch((err) => {
-          ctx.logger.error("Failed to register bot commands", {
-            companyId: runtime.companyId,
-            error: String(err),
-          });
-        });
-    }
-
-    // --- Long polling for inbound messages ---
-    let pollingActive = true;
-    let lastUpdateId = await getPersistedTelegramUpdateOffset(ctx);
-
-    async function pollUpdates(group: TelegramPollingRuntimeGroup): Promise<void> {
-      while (pollingActive) {
-        try {
-          const res = await ctx.http.fetch(
-            `${TELEGRAM_API}/bot${group.token}/getUpdates?offset=${lastUpdateId + 1}&timeout=10&allowed_updates=["message","callback_query"]`,
-            { method: "GET" },
-          );
-          const data = (await res.json()) as {
-            ok: boolean;
-            result?: TelegramUpdate[];
-          };
-
-          if (data.ok && data.result) {
-            lastUpdateId = await processTelegramUpdateBatch({
-              updates: data.result,
-              lastUpdateId,
-              handleUpdate: async (update) => {
-                const runtime = selectTelegramRuntimeForUpdate(group.runtimes, update);
-                if (!runtime) {
-                  ctx.logger.warn("No company-scoped Telegram runtime matched update", {
-                    updateId: update.update_id,
-                    chatId: getTelegramUpdateChatId(update),
-                    tokenRef: group.tokenRef,
-                  });
-                  return;
-                }
-
-                await handleUpdate(
-                  ctx,
-                  group.token,
-                  runtime.config,
-                  update,
-                  runtime.baseUrl,
-                  runtime.publicUrl,
-                  undefined,
-                  runtime.companyId,
-                );
-              },
-              persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
-              logger: ctx.logger,
-            });
-          }
-        } catch (err) {
-          ctx.logger.error("Telegram polling error", {
-            tokenRef: group.tokenRef,
-            companyIds: group.runtimes.map((runtime) => runtime.companyId),
-            error: String(err),
-          });
-          await new Promise((r) => setTimeout(r, 5000));
-        }
-      }
-    }
-
-    const pollingGroups = new Map<string, TelegramPollingRuntimeGroup>();
-    for (const runtime of pollingRuntimes) {
-      const tokenRef = secretRefKey(runtime.config.telegramBotTokenRef);
-      if (!tokenRef) continue;
-      const existing = pollingGroups.get(tokenRef);
-      if (existing) {
-        existing.runtimes.push(runtime);
-      } else {
-        pollingGroups.set(tokenRef, {
-          tokenRef,
-          token: runtime.token,
-          runtimes: [runtime],
-        });
-      }
-    }
-
-    for (const group of pollingGroups.values()) {
-      pollUpdates(group).catch((err) =>
-        ctx.logger.error("Polling loop crashed", {
-          tokenRef: group.tokenRef,
-          companyIds: group.runtimes.map((runtime) => runtime.companyId),
-          error: String(err),
-        }),
-      );
-    }
-
     ctx.events.on("plugin.stopping", async () => {
       pollingActive = false;
     });
 
     // --- Phase 2: ACP output listener (cross-plugin events) ---
-    setupAcpOutputListener(ctx, (event) => resolveTelegramBotToken(ctx, config, event.companyId));
+    setupAcpOutputListener(ctx, () => runtime?.token ?? null);
 
     // --- Event subscriptions ---
 
-    const issuePrefixCache = new Map<string, string>();
+    ctx.events.on("issue.created", async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnIssueCreated) return;
+      await notify(ctx, rt, event, formatIssueCreated);
+    });
 
-    async function resolveIssueLinksOpts(companyId: string): Promise<IssueLinksOpts> {
-      let prefix = issuePrefixCache.get(companyId);
-      if (!prefix) {
-        const company = await ctx.companies.get(companyId);
-        prefix = company?.issuePrefix ?? "";
-        if (prefix) issuePrefixCache.set(companyId, prefix);
-      }
-      return { baseUrl: publicUrl, issuePrefix: prefix || undefined };
-    }
-
-    const notify = async (
-      event: PluginEvent,
-      formatter: (e: PluginEvent, opts?: IssueLinksOpts) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
-      overrideChatId?: string,
-      overrideTopicId?: string,
-    ) => {
-      const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-      const token = await resolveTelegramBotToken(ctx, effectiveConfig, event.companyId);
-      if (!token) return;
-      const chatId = await resolveChat(
-        ctx,
-        event.companyId,
-        overrideChatId || effectiveConfig.defaultChatId,
-      );
-      if (!chatId) return;
-      const linksOpts = await resolveIssueLinksOpts(event.companyId);
-      const msg = formatter(event, linksOpts);
-
-      let messageThreadId = parseTopicId(overrideTopicId);
-      if (!messageThreadId) {
-        messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, effectiveConfig.topicRouting);
-      }
-
-      if (messageThreadId) {
-        msg.options.messageThreadId = messageThreadId;
-      }
-
-      // Issue threading — if we've already sent a message for this entity in this
-      // chat+topic, reply to that anchor so all updates about a single entity stack
-      // as one Telegram thread on mobile (created → comments → done).
-      const anchorKey = event.entityId
-        ? `anchor_${chatId}_${event.entityType}_${event.entityId}`
-        : null;
-      if (anchorKey) {
-        const anchor = (await ctx.state.get({
-          scopeKind: "company",
-          scopeId: event.companyId,
-          stateKey: anchorKey,
-        })) as { messageId: number; messageThreadId?: number } | null;
-        // Only thread when targeting the same topic — Telegram rejects cross-topic replies.
-        if (anchor?.messageId && anchor.messageThreadId === messageThreadId) {
-          msg.options.replyToMessageId = anchor.messageId;
-        }
-      }
-
-      const messageId = await sendMessage(ctx, token, chatId, msg.text, msg.options);
-
-      if (messageId) {
-        const messageMapping = {
-          entityId: event.entityId,
-          entityType: event.entityType,
-          companyId: event.companyId,
-          eventType: event.eventType,
-        };
-
-        await ctx.state.set(
-          {
-            scopeKind: "company",
-            scopeId: event.companyId,
-            stateKey: `msg_${chatId}_${messageId}`,
-          },
-          messageMapping,
-        );
-        await ctx.state.set(
-          {
-            scopeKind: "instance",
-            stateKey: `msg_${chatId}_${messageId}`,
-          },
-          messageMapping,
-        );
-
-        await ctx.activity.log({
-          companyId: event.companyId,
-          message: `Forwarded ${event.eventType} to Telegram`,
-          entityType: "plugin",
-          entityId: event.entityId,
-        });
-
-        // First-message-per-entity: store the anchor so future notifications about the
-        // same entity reply to this one. Never overwritten — the first message stays root.
-        if (anchorKey) {
-          const existing = (await ctx.state.get({
-            scopeKind: "company",
-            scopeId: event.companyId,
-            stateKey: anchorKey,
-          })) as { messageId: number; messageThreadId?: number } | null;
-          if (!existing) {
-            await ctx.state.set(
-              { scopeKind: "company", scopeId: event.companyId, stateKey: anchorKey },
-              { messageId, messageThreadId },
-            );
-          }
-        }
-      }
-    };
-
-    {
-      ctx.events.on("issue.created", async (event: PluginEvent) => {
-        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnIssueCreated) return;
-        await notify(event, formatIssueCreated);
-      });
-    }
-
-    {
-      const doneDedupe = makeUpdateDedupe();
-      ctx.events.on("issue.updated", async (event: PluginEvent) => {
-        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnIssueDone) return;
-        const payload = event.payload as Record<string, unknown>;
-        if (payload.status !== "done") return;
-        if (!doneDedupe(`done|${event.entityId}`)) return;
-        // Enrich with title if missing (issue.updated events often omit it)
-        if (!payload.title && event.entityId) {
-          try {
-            const issue = await ctx.issues.get(event.entityId, event.companyId);
-            if (issue) payload.title = issue.title;
-          } catch { /* best effort */ }
-        }
-        // Enrich with latest comment (completion summary)
-        if (!payload.comment && event.entityId) {
-          try {
-            const comments = await ctx.issues.listComments(event.entityId, event.companyId);
-            if (comments.length > 0) {
-              const latest = comments.reduce((a, b) =>
-                new Date(a.createdAt) > new Date(b.createdAt) ? a : b,
-              );
-              payload.comment = latest.body;
-            }
-          } catch { /* best effort */ }
-        }
-        await notify(event, formatIssueDone);
-      });
-    }
-
-    {
-      const assignmentDedupe = makeUpdateDedupe();
-
-      ctx.events.on("issue.updated", async (event: PluginEvent) => {
-        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnIssueAssigned) return;
-        const payload = event.payload as Record<string, unknown>;
-        const prev = (payload._previous as Record<string, unknown> | undefined) ?? {};
-
-        const userChanged =
-          "assigneeUserId" in payload && payload.assigneeUserId !== prev.assigneeUserId;
-        const agentChanged =
-          "assigneeAgentId" in payload && payload.assigneeAgentId !== prev.assigneeAgentId;
-        if (!userChanged && !agentChanged) return;
-
-        if (effectiveConfig.onlyNotifyIfAssignedTo && payload.assigneeUserId !== effectiveConfig.onlyNotifyIfAssignedTo) {
-          return;
-        }
-
-        const dedupeKey = [
-          "assigned",
-          event.entityId,
-          String(prev.assigneeUserId ?? ""),
-          String(payload.assigneeUserId ?? ""),
-          String(prev.assigneeAgentId ?? ""),
-          String(payload.assigneeAgentId ?? ""),
-        ].join("|");
-        if (!assignmentDedupe(dedupeKey)) return;
-
-        if ((!payload.title || !payload.assigneeName) && event.entityId) {
-          try {
-            const issue = await ctx.issues.get(event.entityId, event.companyId);
-            if (issue) {
-              payload.title ??= issue.title;
-              const name = (issue as unknown as Record<string, unknown>).assigneeName;
-              if (name) payload.assigneeName ??= name;
-            }
-          } catch { /* best effort */ }
-        }
-
-        await notify(event, formatIssueAssigned);
-      });
-    }
-
-    {
-      ctx.events.on("approval.created", async (event: PluginEvent) => {
-        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnApprovalCreated) return;
-        if (!shouldNotifyApproval(event, effectiveConfig.onlyNotifyBoardApprovals)) return;
-        const payload = event.payload as Record<string, unknown>;
-        // Enrich with linked issue details (event only has issueIds)
-        const issueIds = Array.isArray(payload.issueIds) ? payload.issueIds as string[] : [];
-        if (issueIds.length > 0 && !payload.linkedIssues) {
-          try {
-            const issues = await Promise.all(
-              issueIds.slice(0, 5).map((id) => ctx.issues.get(id, event.companyId)),
-            );
-            payload.linkedIssues = issues
-              .filter(Boolean)
-              .map((i) => ({
-                identifier: i!.identifier,
-                title: i!.title,
-                status: i!.status,
-                priority: i!.priority,
-              }));
-            // Use first issue's title as the approval title if missing
-            if (!payload.title && issues[0]) {
-              payload.title = issues[0].identifier
-                ? `${issues[0].identifier}: ${issues[0].title}`
-                : issues[0].title;
-            }
-          } catch { /* best effort */ }
-        }
-        // Enrich agent name
-        if (payload.agentId && !payload.agentName) {
-          try {
-            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
-            if (agent) payload.agentName = agent.name;
-          } catch { /* best effort */ }
-        }
-        // Build a meaningful title if still missing
-        if (!payload.title || payload.title === "Approval Requested") {
-          const approvalType = String(payload.type ?? "unknown").replace(/_/g, " ");
-          const agentLabel = payload.agentName ? String(payload.agentName) : null;
-          payload.title = agentLabel
-            ? `${approvalType} — ${agentLabel}`
-            : approvalType;
-        }
-        await notify(event, formatApprovalCreated, effectiveConfig.approvalsChatId, effectiveConfig.approvalsTopicId);
-      });
-    }
-
-    {
-      const agentErrorDedupe = makeUpdateDedupe(AGENT_ERROR_DEDUPLICATION_WINDOW_MS, 1000);
-      ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
-        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnAgentError) return;
-        const payload = event.payload as Record<string, unknown>;
-        const agentId = String(payload.agentId ?? event.entityId);
-        if (payload.agentId && !payload.agentName) {
-          try {
-            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
-            if (agent) payload.agentName = agent.name;
-          } catch { /* best effort */ }
-        }
-        if (!payload.companyName) {
-          try {
-            const company = await ctx.companies.get(event.companyId);
-            if (company?.name) payload.companyName = company.name;
-          } catch { /* best effort */ }
-        }
-        if (payload.issueId && (!payload.issueIdentifier || !payload.issueTitle)) {
-          try {
-            const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
-            if (issue) {
-              payload.issueIdentifier ??= issue.identifier;
-              payload.issueTitle ??= issue.title;
-            }
-          } catch { /* best effort */ }
-        }
-        const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
-        const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
-        if (!agentErrorDedupe(dedupeKey)) return;
-        await notify(event, formatAgentError, effectiveConfig.errorsChatId, effectiveConfig.errorsTopicId);
-      });
-    }
-
-    const enrichAgentName = async (event: PluginEvent) => {
+    ctx.events.on("issue.updated", async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnIssueDone) return;
       const payload = event.payload as Record<string, unknown>;
+      if (payload.status !== "done") return;
+      if (!doneDedupe(`done|${event.entityId}`)) return;
+      // Enrich with title if missing (issue.updated events often omit it)
+      if (!payload.title && event.entityId) {
+        try {
+          const issue = await ctx.issues.get(event.entityId, event.companyId);
+          if (issue) payload.title = issue.title;
+        } catch { /* best effort */ }
+      }
+      // Enrich with latest comment (completion summary)
+      if (!payload.comment && event.entityId) {
+        try {
+          const comments = await ctx.issues.listComments(event.entityId, event.companyId);
+          if (comments.length > 0) {
+            const latest = comments.reduce((a, b) =>
+              new Date(a.createdAt) > new Date(b.createdAt) ? a : b,
+            );
+            payload.comment = latest.body;
+          }
+        } catch { /* best effort */ }
+      }
+      await notify(ctx, rt, event, formatIssueDone);
+    });
+
+    ctx.events.on("issue.updated", async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnIssueAssigned) return;
+      const payload = event.payload as Record<string, unknown>;
+      const prev = (payload._previous as Record<string, unknown> | undefined) ?? {};
+
+      const userChanged =
+        "assigneeUserId" in payload && payload.assigneeUserId !== prev.assigneeUserId;
+      const agentChanged =
+        "assigneeAgentId" in payload && payload.assigneeAgentId !== prev.assigneeAgentId;
+      if (!userChanged && !agentChanged) return;
+
+      if (rt.config.onlyNotifyIfAssignedTo && payload.assigneeUserId !== rt.config.onlyNotifyIfAssignedTo) {
+        return;
+      }
+
+      const dedupeKey = [
+        "assigned",
+        event.entityId,
+        String(prev.assigneeUserId ?? ""),
+        String(payload.assigneeUserId ?? ""),
+        String(prev.assigneeAgentId ?? ""),
+        String(payload.assigneeAgentId ?? ""),
+      ].join("|");
+      if (!assignmentDedupe(dedupeKey)) return;
+
+      if ((!payload.title || !payload.assigneeName) && event.entityId) {
+        try {
+          const issue = await ctx.issues.get(event.entityId, event.companyId);
+          if (issue) {
+            payload.title ??= issue.title;
+            const name = (issue as unknown as Record<string, unknown>).assigneeName;
+            if (name) payload.assigneeName ??= name;
+          }
+        } catch { /* best effort */ }
+      }
+
+      await notify(ctx, rt, event, formatIssueAssigned);
+    });
+
+    ctx.events.on("approval.created", async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnApprovalCreated) return;
+      if (!shouldNotifyApproval(event, rt.config.onlyNotifyBoardApprovals)) return;
+      const payload = event.payload as Record<string, unknown>;
+      // Enrich with linked issue details (event only has issueIds)
+      const issueIds = Array.isArray(payload.issueIds) ? payload.issueIds as string[] : [];
+      if (issueIds.length > 0 && !payload.linkedIssues) {
+        try {
+          const issues = await Promise.all(
+            issueIds.slice(0, 5).map((id) => ctx.issues.get(id, event.companyId)),
+          );
+          payload.linkedIssues = issues
+            .filter(Boolean)
+            .map((i) => ({
+              identifier: i!.identifier,
+              title: i!.title,
+              status: i!.status,
+              priority: i!.priority,
+            }));
+          // Use first issue's title as the approval title if missing
+          if (!payload.title && issues[0]) {
+            payload.title = issues[0].identifier
+              ? `${issues[0].identifier}: ${issues[0].title}`
+              : issues[0].title;
+          }
+        } catch { /* best effort */ }
+      }
+      // Enrich agent name
       if (payload.agentId && !payload.agentName) {
         try {
           const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
           if (agent) payload.agentName = agent.name;
         } catch { /* best effort */ }
       }
-    };
+      // Build a meaningful title if still missing
+      if (!payload.title || payload.title === "Approval Requested") {
+        const approvalType = String(payload.type ?? "unknown").replace(/_/g, " ");
+        const agentLabel = payload.agentName ? String(payload.agentName) : null;
+        payload.title = agentLabel
+          ? `${approvalType} — ${agentLabel}`
+          : approvalType;
+      }
+      await notify(ctx, rt, event, formatApprovalCreated, rt.config.approvalsChatId, rt.config.approvalsTopicId);
+    });
 
-    const enrichRunIssue = async (event: PluginEvent) => {
+    ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnAgentError) return;
       const payload = event.payload as Record<string, unknown>;
-      if (payload.issueId && !payload.issueIdentifier) {
+      const agentId = String(payload.agentId ?? event.entityId);
+      if (payload.agentId && !payload.agentName) {
         try {
-          const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
-          if (issue?.identifier) payload.issueIdentifier = issue.identifier;
+          const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
+          if (agent) payload.agentName = agent.name;
         } catch { /* best effort */ }
       }
-    };
+      if (!payload.companyName) {
+        try {
+          const company = await ctx.companies.get(event.companyId);
+          if (company?.name) payload.companyName = company.name;
+        } catch { /* best effort */ }
+      }
+      if (payload.issueId && (!payload.issueIdentifier || !payload.issueTitle)) {
+        try {
+          const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
+          if (issue) {
+            payload.issueIdentifier ??= issue.identifier;
+            payload.issueTitle ??= issue.title;
+          }
+        } catch { /* best effort */ }
+      }
+      const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
+      const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
+      if (!agentErrorDedupe(dedupeKey)) return;
+      await notify(ctx, rt, event, formatAgentError, rt.config.errorsChatId, rt.config.errorsTopicId);
+    });
 
-    {
-      ctx.events.on("agent.run.started", async (event: PluginEvent) => {
-        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnAgentRunStarted) {
-          return;
-        }
-        await enrichAgentName(event);
-        await enrichRunIssue(event);
-        await notify(event, formatAgentRunStarted);
-      });
-    }
-    {
-      ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
-        const effectiveConfig = await resolveConfig(ctx, config, event.companyId);
-        if (!effectiveConfig.notifyOnAgentRunFinished) {
-          return;
-        }
-        await enrichAgentName(event);
-        await enrichRunIssue(event);
-        await notify(event, formatAgentRunFinished);
-      });
-    }
+    ctx.events.on("agent.run.started", async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnAgentRunStarted) return;
+      await enrichAgentName(ctx, event);
+      await notify(ctx, rt, event, formatAgentRunStarted);
+    });
+    ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnAgentRunFinished) return;
+      await enrichAgentName(ctx, event);
+      await notify(ctx, rt, event, formatAgentRunFinished);
+    });
 
     // --- Per-company chat overrides ---
 
@@ -1107,7 +1002,8 @@ const plugin = definePlugin({
         scopeId: companyId,
         stateKey: "telegram-chat",
       });
-      return { chatId: saved ?? config.defaultChatId };
+      const rt = ensureRuntime();
+      return { chatId: saved ?? rt?.config.defaultChatId ?? "" };
     });
 
     ctx.actions.register("set-chat", async (params) => {
@@ -1122,37 +1018,51 @@ const plugin = definePlugin({
     });
 
     // --- Daily digest job ---
-    ctx.jobs.register("telegram-daily-digest", async (job) => {
-      const scheduledAt = job.scheduledAt ? new Date(job.scheduledAt) : new Date();
-      const manualRun = job.trigger === "manual";
+
+    ctx.jobs.register("telegram-daily-digest", async () => {
+      const rt = ensureRuntime();
+      if (!rt) return;
+
+      // Support legacy dailyDigestEnabled boolean
+      const effectiveDigestMode = (rt.config as Record<string, unknown>).dailyDigestEnabled === true && rt.config.digestMode === "off"
+        ? "daily"
+        : rt.config.digestMode ?? "off";
+      if (effectiveDigestMode === "off") return;
+
+      // Check if current UTC hour matches a configured digest time
+      const nowHour = new Date().getUTCHours();
+      const nowMin = new Date().getUTCMinutes();
+      if (nowMin >= 5) return; // only fire within first 5 min of the hour
+
+      const parseHour = (t: string) => {
+        const [h] = (t || "").split(":");
+        return parseInt(h ?? "", 10);
+      };
+      const firstHour = parseHour(rt.config.dailyDigestTime);
+      const secondHour = parseHour(rt.config.bidailySecondTime);
+      const tridailyHours = (rt.config.tridailyTimes || "07:00,13:00,19:00")
+        .split(",")
+        .map((t) => parseHour(t.trim()));
+
+      let shouldSend = false;
+      if (effectiveDigestMode === "daily") {
+        shouldSend = nowHour === firstHour;
+      } else if (effectiveDigestMode === "bidaily") {
+        shouldSend = nowHour === firstHour || nowHour === secondHour;
+      } else if (effectiveDigestMode === "tridaily") {
+        shouldSend = tridailyHours.includes(nowHour);
+      }
+      if (!shouldSend) return;
+
       const companies = await ctx.companies.list();
       for (const company of companies) {
-        const effectiveConfig = await resolveConfig(ctx, config, company.id);
-        const effectiveDigestMode = resolveDigestMode(effectiveConfig);
-        if (effectiveDigestMode === "off") continue;
-
-        const digestSlot = resolveDigestSlot(effectiveConfig, scheduledAt);
-        if (!manualRun && !digestSlot) continue;
-
-        let sentKey: string | null = null;
-        if (!manualRun && digestSlot) {
-          sentKey = `digest_sent_${digestSlot.dateKey}_${digestSlot.timeKey}`;
-          const alreadySent = await ctx.state.get({
-            scopeKind: "company",
-            scopeId: company.id,
-            stateKey: sentKey,
-          });
-          if (alreadySent) continue;
-        }
-
-        const token = await resolveTelegramBotToken(ctx, effectiveConfig, company.id);
-        if (!token) continue;
-        const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
-        const chatId = await resolveChat(ctx, company.id, effectiveConfig.digestChatId || effectiveConfig.defaultChatId);
+        const chatId = await resolveChat(ctx, company.id, rt.config.digestChatId || rt.config.defaultChatId);
         if (!chatId) continue;
 
         try {
           const agents = await ctx.agents.list({ companyId: company.id });
+          // Same defect as /status had: `status === "active"` matched nothing on
+          // current hosts, so the digest always reported "0/N" active agents.
           const workingAgents = agents.filter(isWorking);
           const issues = await ctx.issues.list({ companyId: company.id, limit: 50 });
 
@@ -1170,72 +1080,69 @@ const plugin = definePlugin({
           const inReview = issues.filter((i: Issue) => i.status === "in_review");
           const blocked = issues.filter((i: Issue) => i.status === "blocked");
 
-          const dateStr = scheduledAt.toISOString().split("T")[0];
+          const dateStr = new Date().toISOString().split("T")[0];
           const companyLabel = company.name ? ` \\- ${escapeMarkdownV2(company.name)}` : "";
           const digestLabel = effectiveDigestMode === "bidaily" ? "Digest" : "Daily Digest";
           const lines = [
-            escapeMarkdownV2("\ud83d\udcca") + ` *${escapeMarkdownV2(digestLabel)}${companyLabel} \\- ${escapeMarkdownV2(dateStr!)}*`,
+            escapeMarkdownV2("📊") + ` *${escapeMarkdownV2(digestLabel)}${companyLabel} \\- ${escapeMarkdownV2(dateStr!)}*`,
             "",
-            `${escapeMarkdownV2("\u2705")} Tasks completed: *${completedToday.length}*`,
-            `${escapeMarkdownV2("\ud83d\udccb")} Tasks created: *${createdToday.length}*`,
-            `${escapeMarkdownV2("\ud83e\udd16")} Active agents: *${workingAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
+            `${escapeMarkdownV2("✅")} Tasks completed: *${completedToday.length}*`,
+            `${escapeMarkdownV2("📋")} Tasks created: *${createdToday.length}*`,
+            `${escapeMarkdownV2("🤖")} Active agents: *${workingAgents.length}*/${escapeMarkdownV2(String(agents.length))}`,
           ];
 
+          // The list is not ranked, so this names an agent that is working, not
+          // the best one. The old "Top performer" label went unseen wherever the
+          // filter above found nothing; do not resurrect it as a claim the data
+          // cannot support.
           if (workingAgents.length > 0) {
             const workingAgent = workingAgents[0]!.name;
-            lines.push(`${escapeMarkdownV2("\u2b50")} Working: *${escapeMarkdownV2(workingAgent)}*`);
+            lines.push(`${escapeMarkdownV2("⭐")} Working: *${escapeMarkdownV2(workingAgent)}*`);
           }
 
           const formatIssueItem = (i: Issue) => {
             const id = i.identifier ?? i.id;
             const idText = issuePrefix
-              ? `[${escapeMarkdownV2(id)}](${effectivePublicUrl}/${issuePrefix}/issues/${id})`
+              ? `[${escapeMarkdownV2(id)}](${rt.publicUrl}/${issuePrefix}/issues/${id})`
               : escapeMarkdownV2(id);
             return `  ${idText} \\- ${escapeMarkdownV2(i.title)}`;
           };
 
           if (inProgress.length > 0) {
-            lines.push("", `${escapeMarkdownV2("\ud83d\udd04")} *In Progress \\(${inProgress.length}\\)*`);
+            lines.push("", `${escapeMarkdownV2("🔄")} *In Progress \\(${inProgress.length}\\)*`);
             for (const i of inProgress.slice(0, 10)) lines.push(formatIssueItem(i));
           }
           if (inReview.length > 0) {
-            lines.push("", `${escapeMarkdownV2("\ud83d\udd0d")} *In Review \\(${inReview.length}\\)*`);
+            lines.push("", `${escapeMarkdownV2("🔍")} *In Review \\(${inReview.length}\\)*`);
             for (const i of inReview.slice(0, 10)) lines.push(formatIssueItem(i));
           }
           if (blocked.length > 0) {
-            lines.push("", `${escapeMarkdownV2("\ud83d\udeab")} *Blocked \\(${blocked.length}\\)*`);
+            lines.push("", `${escapeMarkdownV2("🚫")} *Blocked \\(${blocked.length}\\)*`);
             for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
           }
 
-          const digestThreadId = await resolveDigestThreadId(ctx, token, chatId, effectiveConfig.digestTopicId);
+          const digestThreadId = await resolveDigestThreadId(ctx, rt.token, chatId, rt.config.digestTopicId);
 
-          await sendMessage(ctx, token, chatId, lines.join("\n"), {
+          await sendMessage(ctx, rt.token, chatId, lines.join("\n"), {
             parseMode: "MarkdownV2",
             messageThreadId: digestThreadId,
           });
-
-          if (sentKey) {
-            await ctx.state.set(
-              { scopeKind: "company", scopeId: company.id, stateKey: sentKey },
-              { sentAt: new Date().toISOString(), jobRunId: job.runId },
-            );
-          }
         } catch (err) {
           ctx.logger.error("Daily digest failed for company", { companyId: company.id, error: String(err) });
           const text = [
-            escapeMarkdownV2("\ud83d\udcca") + " *Daily Digest*",
+            escapeMarkdownV2("📊") + " *Daily Digest*",
             "",
             escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
           ].join("\n");
 
           const errorThreadId = await resolveDigestThreadId(
             ctx,
-            token,
+            rt.token,
             chatId,
-            effectiveConfig.errorsTopicId || effectiveConfig.digestTopicId,
+            rt.config.errorsTopicId || rt.config.digestTopicId,
           );
 
-          await sendMessage(ctx, token, chatId, text, {
+          await sendMessage(ctx, rt.token, chatId, text, {
             parseMode: "MarkdownV2",
             messageThreadId: errorThreadId,
           });
@@ -1244,7 +1151,6 @@ const plugin = definePlugin({
     });
 
     // --- Phase 1: Escalation support ---
-    const escalationManager = new EscalationManager();
 
     // Register escalate_to_human tool - 3-arg signature with ToolRunContext
     ctx.tools.register("escalate_to_human", {
@@ -1286,20 +1192,17 @@ const plugin = definePlugin({
         required: ["reason", "conversationSummary"],
       },
     }, async (params: unknown, runCtx) => {
+      const rt = ensureRuntime();
+      if (!rt) return { error: "Telegram plugin is not configured yet" };
       const p = params as Record<string, unknown>;
-      const effectiveConfig = await resolveConfig(ctx, config, runCtx.companyId);
-      const token = await resolveTelegramBotToken(ctx, effectiveConfig, runCtx.companyId);
-      if (!token) {
-        return { error: "Telegram bot token is not configured or could not be resolved for this company." };
-      }
       const escalationId = crypto.randomUUID();
-      const timeoutMs = effectiveConfig.escalationTimeoutMs || 900000;
-      const defaultAction = effectiveConfig.escalationDefaultAction || "defer";
+      const timeoutMs = rt.config.escalationTimeoutMs || 900000;
+      const defaultAction = rt.config.escalationDefaultAction || "defer";
 
       const resolvedEscalationChatId = await resolveChat(
         ctx,
         runCtx.companyId,
-        effectiveConfig.escalationChatId,
+        rt.config.escalationChatId,
       );
       if (!resolvedEscalationChatId) {
         ctx.logger.warn("Escalation received but no escalationChatId configured");
@@ -1329,12 +1232,12 @@ const plugin = definePlugin({
         sessionId: p.sessionId ? String(p.sessionId) : undefined,
       };
 
-      await escalationManager.create(ctx, token, escalationEvent, resolvedEscalationChatId);
+      await escalationManager.create(ctx, rt.token, escalationEvent, resolvedEscalationChatId);
 
       // Send hold message to the originating chat if configured
-      if (effectiveConfig.escalationHoldMessage && escalationEvent.originChatId) {
-        const holdText = escapeMarkdownV2(effectiveConfig.escalationHoldMessage);
-        await sendMessage(ctx, token, escalationEvent.originChatId, holdText, {
+      if (rt.config.escalationHoldMessage && escalationEvent.originChatId) {
+        const holdText = escapeMarkdownV2(rt.config.escalationHoldMessage);
+        await sendMessage(ctx, rt.token, escalationEvent.originChatId, holdText, {
           parseMode: "MarkdownV2",
           messageThreadId: escalationEvent.originThreadId ? Number(escalationEvent.originThreadId) : undefined,
           replyToMessageId: escalationEvent.originMessageId ? Number(escalationEvent.originMessageId) : undefined,
@@ -1361,11 +1264,9 @@ const plugin = definePlugin({
         required: ["targetAgent", "reason", "contextSummary"],
       },
     }, async (params: unknown, runCtx) => {
-      const token = await resolveTelegramBotToken(ctx, config, runCtx.companyId);
-      if (!token) {
-        return { error: "Telegram bot token is not configured or could not be resolved for this company." };
-      }
-      return handleHandoffToolCall(ctx, token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
+      const rt = ensureRuntime();
+      if (!rt) return { error: "Telegram plugin is not configured yet" };
+      return handleHandoffToolCall(ctx, rt.token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
     });
 
     // --- Phase 2: Register discuss_with_agent tool ---
@@ -1386,11 +1287,9 @@ const plugin = definePlugin({
         required: ["targetAgent", "topic", "initialMessage"],
       },
     }, async (params: unknown, runCtx) => {
-      const token = await resolveTelegramBotToken(ctx, config, runCtx.companyId);
-      if (!token) {
-        return { error: "Telegram bot token is not configured or could not be resolved for this company." };
-      }
-      return handleDiscussToolCall(ctx, token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
+      const rt = ensureRuntime();
+      if (!rt) return { error: "Telegram plugin is not configured yet" };
+      return handleDiscussToolCall(ctx, rt.token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
     });
 
     // --- Phase 5: Register register_watch tool ---
@@ -1429,15 +1328,10 @@ const plugin = definePlugin({
 
     // --- Phase 1: Escalation timeout checker job ---
     ctx.jobs.register("check-escalation-timeouts", async () => {
+      const rt = ensureRuntime();
+      if (!rt) return;
       try {
-        const runtimes = await resolveCompanyRuntimes(
-          ctx,
-          config,
-          (effectiveConfig) => Boolean(effectiveConfig.enableInbound || effectiveConfig.escalationChatId),
-        );
-        for (const runtime of runtimes) {
-          await escalationManager.checkTimeouts(ctx, runtime.token, runtime.companyId);
-        }
+        await escalationManager.checkTimeouts(ctx, rt.token);
       } catch (err) {
         ctx.logger.error("Escalation timeout check failed", { error: String(err) });
       }
@@ -1445,24 +1339,53 @@ const plugin = definePlugin({
 
     // --- Phase 5: Watch checker job ---
     ctx.jobs.register("check-watches", async () => {
+      const rt = ensureRuntime();
+      if (!rt) return;
       try {
-        const runtimes = await resolveCompanyRuntimes(
-          ctx,
-          config,
-          (effectiveConfig) => (effectiveConfig.maxSuggestionsPerHourPerCompany ?? 10) > 0,
-        );
-        for (const runtime of runtimes) {
-          await checkWatches(ctx, runtime.token, {
-            maxSuggestionsPerHourPerCompany: runtime.config.maxSuggestionsPerHourPerCompany ?? 10,
-            watchDeduplicationWindowMs: runtime.config.watchDeduplicationWindowMs ?? 86400000,
-          }, runtime.companyId);
-        }
+        await checkWatches(ctx, rt.token, {
+          maxSuggestionsPerHourPerCompany: rt.config.maxSuggestionsPerHourPerCompany ?? 10,
+          watchDeduplicationWindowMs: rt.config.watchDeduplicationWindowMs ?? 86400000,
+        });
       } catch (err) {
         ctx.logger.error("Watch check failed", { error: String(err) });
       }
     });
 
-    ctx.logger.info("Telegram bot plugin started (Chat OS v2 - all 5 phases)");
+    ctx.logger.info("Telegram bot plugin handlers registered; waiting for delivered configuration");
+  },
+
+  /**
+   * The host delivers stored config here — at worker startup and on every
+   * save. This is the ONLY place `runtime` is built or refreshed; see
+   * "Runtime state" above.
+   */
+  async onConfigChanged(newConfig): Promise<void> {
+    const ctx = _pluginCtx;
+    if (!ctx) return;
+
+    await queueBootstrap(async () => {
+      const companyId = await identifyDeliveredCompany(ctx, newConfig);
+      if (!companyId) {
+        ctx.logger.warn(
+          "Telegram plugin could not attribute a configuration delivery to a company; leaving current runtime unchanged",
+        );
+        if (!runtime) {
+          runtimeHealth = {
+            status: "degraded",
+            message: "Configuration was delivered but no company answered a scoped configuration read.",
+          };
+        }
+        return;
+      }
+
+      try {
+        await bootstrapRuntime(ctx, companyId, newConfig);
+      } catch (err) {
+        const error = String(err);
+        ctx.logger.error("Telegram plugin failed to apply a configuration change", { error, companyId });
+        runtimeHealth = { status: "degraded", message: `Applying the delivered configuration failed: ${error}` };
+      }
+    });
   },
 
   async onValidateConfig(config) {
@@ -1494,7 +1417,6 @@ export async function handleUpdate(
   baseUrl: string,
   publicUrl?: string,
   boardApiToken?: string,
-  runtimeCompanyId?: string,
 ): Promise<void> {
   if (!isTelegramUpdateAllowed(config, update)) {
     const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
@@ -1509,10 +1431,8 @@ export async function handleUpdate(
 
   if (update.callback_query) {
     const companyId = await resolveCallbackCompanyId(ctx, update.callback_query);
-    const effectiveConfig = await resolveConfig(ctx, config, companyId);
-    const effectiveBaseUrl = effectiveConfig.paperclipBaseUrl || baseUrl;
-    const boardApiToken = await resolveBoardApiToken(ctx, effectiveConfig, companyId);
-    await handleCallbackQuery(ctx, token, update.callback_query, effectiveBaseUrl, boardApiToken);
+    const boardApiToken = await resolveBoardApiToken(ctx, config, companyId);
+    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl, boardApiToken);
     return;
   }
 
@@ -1525,15 +1445,13 @@ export async function handleUpdate(
   // Phase 3: Handle media messages
   const hasMedia = !!(msg.voice || msg.audio || msg.video_note || msg.document || msg.photo);
   if (hasMedia) {
-    const companyId = runtimeCompanyId ?? await resolveCompanyIdOrNull(ctx, chatId);
+    const companyId = await resolveCompanyIdOrNull(ctx, chatId);
     if (companyId) {
-      const effectiveConfig = await resolveConfig(ctx, config, companyId);
-      const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveConfig.paperclipBaseUrl || publicUrl;
       const handled = await handleMediaMessage(ctx, token, msg as Parameters<typeof handleMediaMessage>[2], {
-        briefAgentId: effectiveConfig.briefAgentId ?? "",
-        briefAgentChatIds: effectiveConfig.briefAgentChatIds ?? [],
-        transcriptionApiKeyRef: effectiveConfig.transcriptionApiKeyRef ?? "",
-        publicUrl: effectivePublicUrl,
+        briefAgentId: config.briefAgentId ?? "",
+        briefAgentChatIds: config.briefAgentChatIds ?? [],
+        transcriptionApiKeyRef: config.transcriptionApiKeyRef ?? "",
+        publicUrl,
       }, companyId);
       if (handled) return;
     } else {
@@ -1549,7 +1467,7 @@ export async function handleUpdate(
   if (threadId) {
     const isCommand = text.startsWith("/");
     if (!isCommand) {
-      const companyId = runtimeCompanyId ?? await resolveCompanyIdOrNull(ctx, chatId);
+      const companyId = await resolveCompanyIdOrNull(ctx, chatId);
       if (companyId) {
         const replyToId = msg.reply_to_message?.message_id;
         const routed = await routeMessageToAgent(ctx, token, chatId, threadId, text, replyToId, companyId);
@@ -1567,10 +1485,7 @@ export async function handleUpdate(
     const args = text.slice(botCommand.offset + botCommand.length).trim();
     // undefined on unlinked chats: /connect and /help still work, and the
     // company-scoped handlers answer with their "not linked" guidance.
-    const companyId = runtimeCompanyId ?? (await resolveCompanyIdOrNull(ctx, chatId)) ?? undefined;
-    const effectiveConfig = companyId ? await resolveConfig(ctx, config, companyId) : config;
-    const effectiveBaseUrl = effectiveConfig.paperclipBaseUrl || baseUrl;
-    const effectivePublicUrl = effectiveConfig.paperclipPublicUrl || effectiveBaseUrl;
+    const companyId = (await resolveCompanyIdOrNull(ctx, chatId)) ?? undefined;
 
     // Phase 4: Check custom commands first
     if (command === "commands") {
@@ -1582,17 +1497,15 @@ export async function handleUpdate(
     if (handledCustom) return;
 
     // Built-in commands
-    const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, effectiveConfig, companyId) : undefined;
-    await handleCommand(ctx, token, chatId, command, args, threadId, effectiveBaseUrl, effectivePublicUrl, companyId, boardApiToken, effectiveConfig.maxAgentsPerThread);
+    const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, config, companyId) : undefined;
+    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken, config.maxAgentsPerThread);
     return;
   }
 
   if (config.enableInbound && msg.reply_to_message?.from?.is_bot) {
-    const companyId = runtimeCompanyId ?? await resolveCompanyId(ctx, chatId);
     const replyToId = msg.reply_to_message.message_id;
     const mapping = await ctx.state.get({
-      scopeKind: "company",
-      scopeId: companyId,
+      scopeKind: "instance",
       stateKey: `msg_${chatId}_${replyToId}`,
     }) as { entityId: string; entityType: string; companyId: string } | null;
 
@@ -1644,7 +1557,6 @@ async function handleCallbackQuery(
   const actor = query.from.username ?? query.from.first_name ?? String(query.from.id);
   const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
   const messageId = query.message?.message_id;
-  const originalMessageText = query.message?.text?.trim() ?? "";
 
   if (data.startsWith("approve_")) {
     const approvalId = data.replace("approve_", "");
@@ -1672,7 +1584,8 @@ async function handleCallbackQuery(
           token,
           chatId,
           messageId,
-          formatApprovalDecisionMessage("approved", actor, originalMessageText, approvalId),
+          `${escapeMarkdownV2("✅")} *Approved* by ${escapeMarkdownV2(actor)}`,
+          { parseMode: "MarkdownV2" },
         );
       }
     } catch (err) {
@@ -1726,7 +1639,8 @@ async function handleCallbackQuery(
           token,
           chatId,
           messageId,
-          formatApprovalDecisionMessage("rejected", actor, originalMessageText, approvalId),
+          `${escapeMarkdownV2("❌")} *Rejected* by ${escapeMarkdownV2(actor)}`,
+          { parseMode: "MarkdownV2" },
         );
       }
     } catch (err) {
@@ -1750,22 +1664,6 @@ async function handleCallbackQuery(
   }
 
   await answerCallbackQuery(ctx, token, query.id, "Unknown action");
-}
-
-function formatApprovalDecisionMessage(
-  decision: "approved" | "rejected",
-  actor: string,
-  originalMessageText: string,
-  approvalId: string,
-): string {
-  const status = decision === "approved" ? "✅ Approved" : "❌ Rejected";
-  const body = stripApprovalDecisionPrefix(originalMessageText).trim();
-  const fallbackBody = `Approval ID: ${approvalId}`;
-  return `${status} by ${actor}\n${body || fallbackBody}`;
-}
-
-function stripApprovalDecisionPrefix(text: string): string {
-  return text.replace(/^(?:✅ Approved|❌ Rejected) by [^\n]*\n*/u, "");
 }
 
 runWorker(plugin, import.meta.url);
