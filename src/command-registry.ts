@@ -1,5 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
+import { sendMessage, escapeMarkdownV2, sendChatAction, answerCallbackQuery, editMessage } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 
 // --- Types ---
@@ -75,6 +75,47 @@ type StepResult = {
   result: string;
   data?: unknown;
 };
+
+/**
+ * Returned by a `wait_approval` step to tell executeWorkflow to stop and park.
+ * Carries the approval id so the continuation is stored under the same key the
+ * buttons will send back.
+ */
+const AWAITING_APPROVAL_PREFIX = "__awaiting_approval__:";
+
+/** Callback data prefixes for the two buttons a wait_approval step sends. */
+const APPROVE_PREFIX = "cmd_approve_";
+const REJECT_PREFIX = "cmd_reject_";
+
+/**
+ * Everything needed to restart a workflow at the step after its approval gate.
+ *
+ * Telegram processes updates strictly sequentially, so a step cannot await a
+ * button press — the press arrives as a later update that cannot be handled
+ * while the loop is blocked. The workflow therefore stops here and the
+ * continuation is resolved from the callback handler, the same stateless shape
+ * /decisions uses. Nothing secret is stored: the bot token is re-resolved when
+ * the callback arrives.
+ */
+type ParkedWorkflow = {
+  commandName: string;
+  args: string[];
+  results: StepResult[];
+  nextStepIndex: number;
+  chatId: string;
+  messageThreadId?: number;
+  companyId: string;
+  createdAt: number;
+  // Set in place of deleting the row outright: writing a JS `null` value hits
+  // a NOT NULL constraint on plugin_state.value_json at the platform layer
+  // (BLA-606) and throws before either Telegram call below ever runs, so the
+  // button silently does nothing. A sentinel object keeps the write valid.
+  resolved?: boolean;
+};
+
+function approvalStateKey(approvalId: string): string {
+  return `cmd_approval_${approvalId}`;
+}
 
 // --- Built-in commands ---
 
@@ -321,15 +362,48 @@ async function executeWorkflow(
   args: string[],
   messageThreadId: number | undefined,
   companyId: string,
+  startIndex = 0,
+  priorResults: StepResult[] = [],
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
-  await ctx.metrics.write(METRIC_NAMES.commandsExecuted, 1);
+  if (startIndex === 0) {
+    await ctx.metrics.write(METRIC_NAMES.commandsExecuted, 1);
+  }
 
-  const results: StepResult[] = [];
+  const results: StepResult[] = [...priorResults];
 
-  for (const step of cmd.steps) {
+  for (let index = startIndex; index < cmd.steps.length; index++) {
+    const step = cmd.steps[index]!;
     try {
       const result = await executeStep(ctx, token, chatId, step, args, results, messageThreadId, companyId);
+
+      // An approval gate stops the run here. Continuing would execute the very
+      // steps the gate exists to hold back — which is what this used to do,
+      // making the Approve button decorative.
+      if (typeof result === "string" && result.startsWith(AWAITING_APPROVAL_PREFIX)) {
+        const approvalId = result.slice(AWAITING_APPROVAL_PREFIX.length);
+        const parked: ParkedWorkflow = {
+          commandName: cmd.name,
+          args,
+          results,
+          nextStepIndex: index + 1,
+          chatId,
+          messageThreadId,
+          companyId,
+          createdAt: Date.now(),
+        };
+        await ctx.state.set(
+          { scopeKind: "instance", stateKey: approvalStateKey(approvalId) },
+          parked,
+        );
+        ctx.logger.info("Workflow parked awaiting approval", {
+          command: cmd.name,
+          stepId: step.id,
+          approvalId,
+        });
+        return;
+      }
+
       results.push({ stepId: step.id, result: result ?? "" });
     } catch (err) {
       ctx.logger.error("Workflow step failed", { command: cmd.name, stepId: step.id, error: String(err) });
@@ -430,24 +504,36 @@ async function executeStep(
 
     case "wait_approval": {
       const prompt = interpolate(step.prompt);
-      const approvalId = `cmd_approval_${Date.now()}`;
+      // Unique per step within a run: Date.now() alone collides when two steps
+      // park in the same millisecond, and a collision would resume the wrong
+      // continuation.
+      const approvalId = `${Date.now()}_${step.id}`;
       await sendMessage(ctx, token, chatId, prompt, {
         messageThreadId,
         inlineKeyboard: [
           [
-            { text: "Approve", callback_data: `cmd_approve_${approvalId}` },
-            { text: "Reject", callback_data: `cmd_reject_${approvalId}` },
+            { text: "Approve", callback_data: `${APPROVE_PREFIX}${approvalId}` },
+            { text: "Reject", callback_data: `${REJECT_PREFIX}${approvalId}` },
           ],
         ],
       });
-      // Store approval state - workflow will be continued by callback handler
-      await ctx.state.set(
-        { scopeKind: "instance", stateKey: `cmd_approval_${approvalId}` },
-        { status: "pending", createdAt: Date.now() },
-      );
-      return "awaiting_approval";
+      // executeWorkflow stores the continuation under this id and stops. The
+      // state is written there rather than here because only the loop knows
+      // which step comes next.
+      return `${AWAITING_APPROVAL_PREFIX}${approvalId}`;
     }
 
+    // NOTE: there is deliberately no "choice" step that blocks inline.
+    //
+    // A step that asks the user to pick and *awaits* the answer cannot work
+    // here: updates are processed strictly sequentially, so a workflow that
+    // blocks on a button press blocks the loop that would deliver it. The
+    // press can never arrive and the run stalls until it times out.
+    //
+    // `wait_approval` is how such a step has to be built instead: send the
+    // buttons, persist the continuation, return, and let the callback handler
+    // resume the run. A `choice` step can be added the same way — park the
+    // context keyed by an id and resolve it in resolveWorkflowApprovalCallback.
     case "set_state": {
       const key = interpolate(step.key);
       const value = interpolate(step.value);
@@ -461,6 +547,99 @@ async function executeStep(
     default:
       return null;
   }
+}
+
+// --- Approval callbacks ---
+
+/** True for the two callbacks a wait_approval step's buttons send back. */
+export function isWorkflowApprovalCallback(data: string): boolean {
+  return data.startsWith(APPROVE_PREFIX) || data.startsWith(REJECT_PREFIX);
+}
+
+/**
+ * Resume or abandon a workflow parked at an approval gate.
+ *
+ * The parked state is deleted before the remaining steps run. That ordering is
+ * the point: it makes a second press of the same button a no-op instead of
+ * running the tail of the workflow twice. Telegram leaves the buttons on screen
+ * and re-delivers callbacks it considers unacknowledged, so a double press is
+ * the expected case, not the unlucky one.
+ */
+export async function resolveWorkflowApprovalCallback(
+  ctx: PluginContext,
+  token: string,
+  data: string,
+  callbackQueryId: string,
+  actor: string,
+  messageId?: number,
+): Promise<void> {
+  const approved = data.startsWith(APPROVE_PREFIX);
+  const approvalId = data.slice((approved ? APPROVE_PREFIX : REJECT_PREFIX).length);
+  const stateKey = approvalStateKey(approvalId);
+
+  const parked = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey,
+  }) as ParkedWorkflow | null;
+
+  if (!parked || parked.resolved) {
+    // Already decided, or from a build before the continuation was persisted.
+    // Saying so beats silence, which would read as the button doing nothing.
+    await answerCallbackQuery(ctx, token, callbackQueryId, "This approval is no longer pending.");
+    return;
+  }
+
+  await ctx.state.set({ scopeKind: "instance", stateKey }, { ...parked, resolved: true });
+
+  if (!approved) {
+    await answerCallbackQuery(ctx, token, callbackQueryId, "Rejected");
+    if (messageId) {
+      await editMessage(ctx, token, parked.chatId, messageId, `Rejected by ${actor}. The workflow stopped here.`);
+    }
+    ctx.logger.info("Workflow rejected at approval gate", {
+      command: parked.commandName,
+      approvalId,
+      actor,
+    });
+    return;
+  }
+
+  await answerCallbackQuery(ctx, token, callbackQueryId, "Approved");
+  if (messageId) {
+    const edited = await editMessage(ctx, token, parked.chatId, messageId, `Approved by ${actor}. Continuing.`);
+    if (!edited) {
+      ctx.logger.error("editMessage after approval failed", {
+        chatId: parked.chatId,
+        messageId,
+      });
+    }
+  }
+
+  const commands = await getCommandRegistry(ctx, parked.companyId);
+  const cmd = commands.find((c) => c.name === parked.commandName);
+  if (!cmd) {
+    // The command was edited or deleted while the approval sat pending.
+    await sendMessage(
+      ctx,
+      token,
+      parked.chatId,
+      `Approved, but /${parked.commandName} no longer exists — nothing to continue.`,
+      { messageThreadId: parked.messageThreadId },
+    );
+    return;
+  }
+
+  await executeWorkflow(
+    ctx,
+    token,
+    parked.chatId,
+    cmd,
+    parked.args,
+    parked.messageThreadId,
+    parked.companyId,
+    parked.nextStepIndex,
+    parked.results,
+  );
 }
 
 // --- State helpers ---
