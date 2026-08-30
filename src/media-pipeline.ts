@@ -3,6 +3,7 @@ import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js
 import { METRIC_NAMES } from "./constants.js";
 import { getSessions, wakeAgentWithIssue } from "./acp-bridge.js";
 import { resolveMappedProjectIdForTopic } from "./topic-projects.js";
+import { normalizeSecretRef } from "./secret-ref-validation.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
 
@@ -194,7 +195,12 @@ async function transcribeAudio(
   const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
 
   // 3. Resolve the OpenAI API key from Paperclip secrets
-  const apiKey = await ctx.secrets.resolve(transcriptionApiKeyRef, {
+  const normalizedRef = normalizeSecretRef(transcriptionApiKeyRef);
+  if (!normalizedRef) {
+    ctx.logger.error("Invalid transcription API key secret reference", { companyId });
+    return null;
+  }
+  const apiKey = await ctx.secrets.resolve(normalizedRef, {
     companyId,
     configPath: "transcriptionApiKeyRef",
   });

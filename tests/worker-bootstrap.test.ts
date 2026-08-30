@@ -172,8 +172,8 @@ describe("worker deliveries-only bootstrap", () => {
 
   it("attributes a context-less delivery by probing scoped config across companies", async () => {
     const { plugin } = await import("../src/worker.js");
-    const configA = { telegramBotTokenRef: "ref-a", defaultChatId: "chat-a" };
-    const configB = { telegramBotTokenRef: "ref-b", defaultChatId: "chat-b" };
+    const configA = { telegramBotTokenRef: "11111111-1111-4111-8111-111111111111", defaultChatId: "chat-a" };
+    const configB = { telegramBotTokenRef: "22222222-2222-4222-8222-222222222222", defaultChatId: "chat-b" };
     const { ctx } = makeCtx({
       companies: [{ id: "company-a" }, { id: "company-b" }],
       configByCompany: { "company-a": configA, "company-b": configB },
@@ -185,10 +185,35 @@ describe("worker deliveries-only bootstrap", () => {
     // though both companies answer the scoped probe (the >= 2026.817.0 case).
     await plugin.definition.onConfigChanged!(configB);
 
-    expect(ctx.secrets.resolve).toHaveBeenCalledWith("ref-b", {
+    expect(ctx.secrets.resolve).toHaveBeenCalledWith({
+      type: "secret_ref",
+      secretId: "22222222-2222-4222-8222-222222222222",
+    }, {
       companyId: "company-b",
       configPath: "telegramBotTokenRef",
     });
+  });
+
+  it("refuses attribution when multiple companies share the delivered bot token reference", async () => {
+    const { plugin } = await import("../src/worker.js");
+    const sharedRef = "33333333-3333-4333-8333-333333333333";
+    const configA = { telegramBotTokenRef: sharedRef, defaultChatId: "chat-a" };
+    const configB = { telegramBotTokenRef: sharedRef, defaultChatId: "chat-b" };
+    const { ctx } = makeCtx({
+      companies: [{ id: "company-a" }, { id: "company-b" }],
+      configByCompany: { "company-a": configA, "company-b": configB },
+      resolveSecret: async () => "bot-token",
+    });
+    await plugin.definition.setup(ctx);
+
+    await plugin.definition.onConfigChanged!(configB);
+
+    expect(ctx.secrets.resolve).not.toHaveBeenCalled();
+    expect(await plugin.definition.onHealth!()).toMatchObject({ status: "degraded" });
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      "Telegram plugin refused ambiguous configuration delivery attribution",
+      expect.objectContaining({ matchingCompanyIds: ["company-a", "company-b"] }),
+    );
   });
 
   it("cannot attribute a delivery when no company answers a scoped read", async () => {
@@ -317,6 +342,28 @@ describe("worker deliveries-only bootstrap", () => {
 
     const health = await plugin.definition.onHealth!();
     expect(health.status).toBe("degraded");
+  });
+
+  it("keeps the last working runtime when a later token resolution fails", async () => {
+    const { plugin } = await import("../src/worker.js");
+    const configA = { telegramBotTokenRef: "ref-a", notifyOnIssueCreated: true, defaultChatId: "chat-a" };
+    const configB = { telegramBotTokenRef: "ref-b", notifyOnIssueCreated: true, defaultChatId: "chat-b" };
+    const { ctx, registered } = makeCtx({
+      companies: [{ id: "company-a" }],
+      configByCompany: { "company-a": configA },
+      resolveSecret: async () => "bot-token-a",
+    });
+    await plugin.definition.setup(ctx);
+    await plugin.definition.onConfigChanged!(configA);
+    sentMessages = [];
+
+    (ctx.secrets.resolve as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("temporary secret store failure"));
+    await plugin.definition.onConfigChanged!(configB);
+    await emit(registered, "issue.created", issueCreatedEvent("company-a"));
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]!.chatId).toBe("chat-a");
+    expect(await plugin.definition.onHealth!()).toMatchObject({ status: "degraded" });
   });
 
   it("ACP output listener resolves the token lazily and no-ops before a delivery lands", async () => {

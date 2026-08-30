@@ -537,16 +537,26 @@ async function identifyDeliveredCompany(
 
   // A host that answers for several companies is not telling us which one was
   // saved; match the delivered bot-token reference against the readable rows.
-  const deliveredRef = asNonEmptyString(
+  const deliveredRef = normalizeSecretRef(
     (deliveredConfig as Record<string, unknown> | null)?.telegramBotTokenRef,
   );
-  if (deliveredRef) {
-    const match = readable.find(
-      (row) => asNonEmptyString(row.config.telegramBotTokenRef) === deliveredRef,
-    );
-    if (match) return match.id;
+  const deliveredSecretId = deliveredRef && typeof deliveredRef === "object" ? deliveredRef.secretId : null;
+  if (deliveredSecretId) {
+    const matches = readable.filter((row) => {
+      const rowRef = normalizeSecretRef(row.config.telegramBotTokenRef);
+      return rowRef && typeof rowRef === "object" && rowRef.secretId === deliveredSecretId;
+    });
+    if (matches.length === 1) return matches[0]!.id;
+    ctx.logger.warn("Telegram plugin refused ambiguous configuration delivery attribution", {
+      deliveredSecretId,
+      matchingCompanyIds: matches.map((row) => row.id),
+    });
+    return null;
   }
-  return readable[0]!.id;
+  ctx.logger.warn("Telegram plugin refused configuration delivery attribution without a usable bot token reference", {
+    readableCompanyIds: readable.map((row) => row.id),
+  });
+  return null;
 }
 
 /**
@@ -588,8 +598,7 @@ async function bootstrapRuntime(
   );
   if (!token) {
     ctx.logger.warn("Telegram plugin runtime disabled because bot token could not be resolved", { companyId });
-    runtime = null;
-    return null;
+    return runtime;
   }
 
   runtime = { companyId, config, token, baseUrl, publicUrl };

@@ -6,9 +6,6 @@ export type TelegramRuntimeHealth = PluginHealthDiagnostics & {
   details?: Record<string, unknown>;
 };
 
-export const SECRET_RESOLUTION_DISABLED_MESSAGE = "Plugin secret references are disabled until company-scoped plugin config lands";
-export const SECRET_RESOLUTION_ISSUE_URL = "https://github.com/mvanhorn/paperclip-plugin-telegram/issues/63";
-
 /**
  * Resolve the Telegram bot token secret for a company-scoped configuration
  * delivery.
@@ -36,15 +33,13 @@ export async function resolveTelegramBotToken(
     const error = String(err);
     setHealth({
       status: "degraded",
-      message: SECRET_RESOLUTION_DISABLED_MESSAGE,
+      message: `Bot token secret resolution failed: ${error}`,
       details: {
-        issue: "paperclip-plugin-secret-resolution-disabled",
-        reference: SECRET_RESOLUTION_ISSUE_URL,
+        error,
       },
     });
     ctx.logger.error("Telegram plugin cannot resolve bot token secret; runtime features are disabled", {
       error,
-      reference: SECRET_RESOLUTION_ISSUE_URL,
     });
     return undefined;
   }
