@@ -150,12 +150,6 @@ describe("BLA-606 repro: callback_query for a parked wait_approval, via handleUp
       "co-1",
     );
 
-    console.log("answeredCallbacks:", JSON.stringify(answeredCallbacks));
-    console.log("editedMessages:", JSON.stringify(editedMessages));
-    console.log("sentMessages:", JSON.stringify(sentMessages));
-    console.log("logger.warn calls:", JSON.stringify((ctx.logger.warn as ReturnType<typeof vi.fn>).mock.calls));
-    console.log("logger.error calls:", JSON.stringify((ctx.logger.error as ReturnType<typeof vi.fn>).mock.calls));
-
     // What we SHOULD see if this worked: an answered callback and an edited message.
     expect(answeredCallbacks.length).toBeGreaterThan(0);
     expect(editedMessages.length).toBeGreaterThan(0);
