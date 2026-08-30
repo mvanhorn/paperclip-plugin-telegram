@@ -41,6 +41,33 @@ const manifest: PaperclipPluginManifestV1 = {
     worker: "./dist/worker.js",
     ui: "./dist/ui",
   },
+  instanceConfigSchema: {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      // Secret refs accept BOTH shapes on purpose.
+      //
+      // Older hosts store a bare secret UUID string. Current hosts validate
+      // config against this schema AND separately enforce their own secret-ref
+      // rule requiring an object: { type: "secret_ref", secretId, version? }.
+      // With `type: "string"` alone the two are mutually unsatisfiable — the
+      // object fails this schema ("must be string") and the string fails the
+      // host ('must use { type: "secret_ref", ... }') — so the plugin cannot be
+      // configured at all on such a host.
+      telegramBotTokenRef: {
+        type: ["string", "object"],
+        format: "secret-ref",
+      },
+      paperclipBoardApiTokenRef: {
+        type: ["string", "object"],
+        format: "secret-ref",
+      },
+      transcriptionApiKeyRef: {
+        type: ["string", "object"],
+        format: "secret-ref",
+      },
+    },
+  },
   ui: {
     slots: [
       {

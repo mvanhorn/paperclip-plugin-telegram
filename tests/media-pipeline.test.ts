@@ -70,7 +70,7 @@ function mockCtx(): PluginContext {
 const defaultConfig = {
   briefAgentId: "brief-agent",
   briefAgentChatIds: ["intake-chat"],
-  transcriptionApiKeyRef: "openai-key",
+  transcriptionApiKeyRef: "11111111-1111-4111-8111-111111111111",
 };
 
 beforeEach(() => {
@@ -184,6 +184,13 @@ describe("Audio type detection", () => {
 
     // Should show transcription preview
     expect(sentMessages.some(m => m.text.includes("Transcription"))).toBe(true);
+    expect(ctx.secrets.resolve).toHaveBeenCalledWith({
+      type: "secret_ref",
+      secretId: "11111111-1111-4111-8111-111111111111",
+    }, {
+      companyId: "company-1",
+      configPath: "transcriptionApiKeyRef",
+    });
   });
 
   it("detects audio messages as audio", async () => {
