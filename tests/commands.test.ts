@@ -199,6 +199,23 @@ describe("handleCommand", () => {
     expect(sentMessages[0].text).toContain("Tester");
   });
 
+  it("/agents caps the message under Telegram's 4096-char limit for large companies", async () => {
+    stateStore["chat_123"] = { companyId: "co-1" };
+    const ctx = mockCtx();
+    const manyAgents = Array.from({ length: 70 }, (_, i) => ({
+      id: `agent-${i}`,
+      name: `Agent With A Fairly Long Descriptive Name Number ${i}`,
+      status: "active",
+    }));
+    (ctx.agents as unknown) = { list: vi.fn().mockResolvedValue(manyAgents) };
+
+    await handleCommand(ctx, "token", "123", "agents", "");
+
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].text.length).toBeLessThan(4096);
+    expect(sentMessages[0].text).toContain("more");
+  });
+
   it("/create without args shows usage", async () => {
     const ctx = mockCtx();
     await handleCommand(ctx, "token", "123", "create", "");
