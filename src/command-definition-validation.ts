@@ -30,6 +30,22 @@ const VALID_STEP_TYPES = [
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE"] as const;
 
+const NAME_PATTERN = /^[a-zA-Z0-9_]{1,32}$/;
+
+const MAX_INTERPOLATED_LENGTH = 40;
+
+/**
+ * A step `id`/`type` reaches error-message interpolation before any length
+ * check, so an oversized value (e.g. a multi-KB `id`) can push a reply past
+ * Telegram's 4096-char limit. `sendMessage` swallows that rejection, leaving
+ * the user with silence instead of the error this validation exists to show.
+ */
+function truncateForDisplay(value: string): string {
+  return value.length > MAX_INTERPOLATED_LENGTH
+    ? `${value.slice(0, MAX_INTERPOLATED_LENGTH)}…`
+    : value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -59,14 +75,14 @@ function validateStep(value: unknown, index: number): StepResult {
   if (!isNonEmptyString(id)) {
     return { ok: false, error: `${position} must have an 'id' field.` };
   }
-  const label = `${position} ('${id}')`;
+  const label = `${position} ('${truncateForDisplay(id)}')`;
 
   const type = value.type;
   if (!isNonEmptyString(type)) {
     return { ok: false, error: `${label} must have a 'type' field.` };
   }
   if (!isStepType(type)) {
-    return { ok: false, error: `Invalid step type: '${type}' (${label}). Valid: ${VALID_STEP_TYPES.join(", ")}` };
+    return { ok: false, error: `Invalid step type: '${truncateForDisplay(type)}' (${label}). Valid: ${VALID_STEP_TYPES.join(", ")}` };
   }
 
   const name = typeof value.name === "string" ? value.name : undefined;
@@ -178,6 +194,10 @@ export function validateCommandDefinition(parsed: unknown): CommandDefinitionVal
 
   if (!isNonEmptyString(parsed.name)) {
     return { ok: false, error: "Command definition must have a 'name' field." };
+  }
+
+  if (!NAME_PATTERN.test(parsed.name)) {
+    return { ok: false, error: "Command definition 'name' must match ^[a-zA-Z0-9_]{1,32}$ (letters, numbers, underscores only, max 32 chars, no whitespace)." };
   }
 
   if (parsed.description !== undefined && typeof parsed.description !== "string") {
