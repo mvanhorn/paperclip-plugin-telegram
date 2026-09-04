@@ -37,6 +37,61 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "commands", description: "Manage custom workflow commands (list, import, run, delete)" },
 ];
 
+type HelpEntry = {
+  // Full invocation grammar, e.g. "/acp <spawn|status|cancel|close>". Inlined
+  // here so a first-time user can see subcommand syntax in /help itself,
+  // instead of needing to already know to invoke the bare parent command
+  // (/acp, /commands, /topics) to discover it.
+  usage: string;
+  description: string;
+};
+
+type HelpGroup = {
+  title: string;
+  entries: HelpEntry[];
+};
+
+// Grouped by task rather than BOT_COMMANDS's flat menu order: a first-time
+// user scanning /help should be able to tell "what do I use for approvals"
+// at a glance, not read 11 undifferentiated lines. Every command in
+// BOT_COMMANDS appears in exactly one group here (enforced by a test).
+export const HELP_GROUPS: HelpGroup[] = [
+  {
+    title: "Daily use",
+    entries: [
+      { usage: "/create <task title>", description: "Create a new task (assigned to CEO agent)" },
+      { usage: "/status", description: "Company health: active agents, open issues" },
+      { usage: "/issues [project]", description: "List open issues (optionally by project)" },
+      { usage: "/help", description: "Show available commands" },
+    ],
+  },
+  {
+    title: "Approvals",
+    entries: [{ usage: "/approve <approval-id>", description: "Approve a pending request by ID" }],
+  },
+  {
+    title: "Agent sessions",
+    entries: [
+      { usage: "/acp <spawn|status|cancel|close>", description: "Manage agent sessions" },
+      { usage: "/agents", description: "List agents with current status" },
+    ],
+  },
+  {
+    title: "Automation",
+    entries: [
+      { usage: "/commands <list|import|run|delete>", description: "Manage custom workflow commands" },
+    ],
+  },
+  {
+    title: "Setup",
+    entries: [
+      { usage: "/connect <company-name>", description: "Link this chat to a Paperclip company" },
+      { usage: "/connect_topic <project-name> [topic-id]", description: "Map a project to a forum topic" },
+      { usage: "/topics <list|remove|clear>", description: "List or remove forum topic mappings" },
+    ],
+  },
+];
+
 export async function handleCommand(
   ctx: PluginContext,
   token: string,
@@ -317,13 +372,18 @@ async function handleHelp(
   chatId: string,
   messageThreadId?: number,
 ): Promise<void> {
-  const lines = [
-    escapeMarkdownV2("📎") + " *Paperclip Bot Commands*",
-    "",
-    ...BOT_COMMANDS.map(
-      (cmd) => `/${escapeMarkdownV2(cmd.command)} \\- ${escapeMarkdownV2(cmd.description)}`,
-    ),
-  ];
+  const lines = [escapeMarkdownV2("📎") + " *Paperclip Bot Commands*"];
+
+  for (const group of HELP_GROUPS) {
+    lines.push("");
+    lines.push(`*${escapeMarkdownV2(group.title)}*`);
+    for (const entry of group.entries) {
+      lines.push(`${escapeMarkdownV2(entry.usage)} \\- ${escapeMarkdownV2(entry.description)}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(escapeMarkdownV2("Run a command with no arguments (e.g. /acp) to see its full usage."));
 
   await sendMessage(ctx, token, chatId, lines.join("\n"), {
     parseMode: "MarkdownV2",
