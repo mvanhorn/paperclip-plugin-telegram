@@ -854,11 +854,15 @@ export const plugin = definePlugin({
       const payload = event.payload as Record<string, unknown>;
       if (payload.status !== "done") return;
       if (!doneDedupe(`done|${event.entityId}`)) return;
-      // Enrich with title if missing (issue.updated events often omit it)
-      if (!payload.title && event.entityId) {
+      // Enrich with title/priority if missing (issue.updated events often omit them;
+      // priority drives the disableNotification policy in formatIssueDone)
+      if ((!payload.title || !payload.priority) && event.entityId) {
         try {
           const issue = await ctx.issues.get(event.entityId, event.companyId);
-          if (issue) payload.title = issue.title;
+          if (issue) {
+            payload.title ??= issue.title;
+            payload.priority ??= issue.priority;
+          }
         } catch { /* best effort */ }
       }
       // Enrich with latest comment (completion summary)
@@ -902,11 +906,12 @@ export const plugin = definePlugin({
       ].join("|");
       if (!assignmentDedupe(dedupeKey)) return;
 
-      if ((!payload.title || !payload.assigneeName) && event.entityId) {
+      if ((!payload.title || !payload.assigneeName || !payload.priority) && event.entityId) {
         try {
           const issue = await ctx.issues.get(event.entityId, event.companyId);
           if (issue) {
             payload.title ??= issue.title;
+            payload.priority ??= issue.priority;
             const name = (issue as unknown as Record<string, unknown>).assigneeName;
             if (name) payload.assigneeName ??= name;
           }
