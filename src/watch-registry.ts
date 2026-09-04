@@ -1,6 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2 } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
+import { str } from "./coerce.js";
 
 // --- Types ---
 
@@ -62,14 +63,14 @@ export async function handleRegisterWatch(
   params: Record<string, unknown>,
   companyId: string,
 ): Promise<{ content?: string; error?: string }> {
-  const name = String(params.name ?? "");
-  const description = String(params.description ?? "");
-  const entityType = String(params.entityType ?? "custom") as Watch["entityType"];
+  const name = str(params.name);
+  const description = str(params.description);
+  const entityType = str(params.entityType, "custom") as Watch["entityType"];
   const conditions = (params.conditions as WatchCondition[] | undefined) ?? [];
-  const template = String(params.template ?? "");
-  const chatId = String(params.chatId ?? "");
+  const template = str(params.template);
+  const chatId = str(params.chatId);
   const threadId = params.threadId ? Number(params.threadId) : undefined;
-  const useBuiltin = params.builtinTemplate ? String(params.builtinTemplate) : undefined;
+  const useBuiltin = params.builtinTemplate ? str(params.builtinTemplate) : undefined;
 
   if (!name && !useBuiltin) {
     return { error: "Either 'name' or 'builtinTemplate' is required" };
@@ -245,7 +246,7 @@ async function evaluateWatch(
       if (customData) {
         for (const item of customData) {
           if (matchesConditions(item, watch.conditions)) {
-            matches.push({ id: String(item.id ?? "unknown"), ...item });
+            matches.push({ id: str(item.id, "unknown"), ...item });
           }
         }
       }
@@ -278,10 +279,10 @@ function matchesConditions(record: Record<string, unknown>, conditions: WatchCon
         if (!(Number(fieldValue) > Number(compareValue))) return false;
         break;
       case "lt":
-        if (!(String(fieldValue) < String(compareValue))) return false;
+        if (!(str(fieldValue) < String(compareValue))) return false;
         break;
       case "contains":
-        if (!String(fieldValue ?? "").includes(String(compareValue))) return false;
+        if (!str(fieldValue).includes(String(compareValue))) return false;
         break;
       case "exists":
         if ((fieldValue == null) !== !compareValue) return false;
@@ -294,7 +295,7 @@ function matchesConditions(record: Record<string, unknown>, conditions: WatchCon
 function interpolateTemplate(template: string, entity: Record<string, unknown>): string {
   let result = template;
   for (const [key, value] of Object.entries(entity)) {
-    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), String(value ?? ""));
+    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), str(value));
   }
   return result;
 }
