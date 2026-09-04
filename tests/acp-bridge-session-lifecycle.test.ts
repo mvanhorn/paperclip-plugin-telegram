@@ -29,7 +29,7 @@ function mockCtx(): PluginContext {
       }),
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    events: { emit: vi.fn((e: string, c: string, p: unknown) => emittedEvents.push({ event: e, companyId: c, payload: p })), on: vi.fn() },
+    events: { emit: vi.fn(async (e: string, c: string, p: unknown) => emittedEvents.push({ event: e, companyId: c, payload: p })), on: vi.fn() },
     agents: {
       get: vi.fn(),
       list: vi.fn().mockResolvedValue([]),

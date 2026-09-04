@@ -30,7 +30,7 @@ function mockCtx(agentsListImpl?: () => Promise<unknown[]>): PluginContext {
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     events: {
-      emit: vi.fn((event: string, companyId: string, payload: unknown) => {
+      emit: vi.fn(async (event: string, companyId: string, payload: unknown) => {
         emittedEvents.push({ event, companyId, payload });
       }),
       on: vi.fn(),
