@@ -48,6 +48,12 @@ export const DEFAULT_CONFIG = {
 
 export const AGENT_ERROR_DEDUPLICATION_WINDOW_MS = 30 * 60 * 1000;
 
+// Cutoff for the error text shown inline in an agent-error notification.
+// formatAgentError truncates at this length and, when it does, swaps
+// "View Run" for a "Full error" button in the same keyboard slot — both
+// link to the run page, so only one is ever shown.
+export const AGENT_ERROR_TRUNCATE_LENGTH = 500;
+
 export const MAX_CONVERSATION_TURNS = 50;
 export const DEFAULT_CONVERSATION_TURNS = 10;
 
