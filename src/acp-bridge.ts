@@ -1148,7 +1148,7 @@ async function executeHandoff(
     await saveSessions(ctx, chatId, threadId, sessions);
 
     if (transport === "acp") {
-      // `events.emit` is a host RPC \u2014 a rejection must not propagate: this
+      // `events.emit` is a host RPC — a rejection must not propagate: this
       // runs inside handleUpdate's call graph, and an uncaught throw there
       // wedges Telegram polling for every chat.
       await ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
@@ -1186,7 +1186,7 @@ async function executeHandoff(
       "handoff",
     );
   } else {
-    // `events.emit` is a host RPC \u2014 a rejection must not propagate: this
+    // `events.emit` is a host RPC — a rejection must not propagate: this
     // runs inside handleUpdate's call graph, and an uncaught throw there
     // wedges Telegram polling for every chat.
     await ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
@@ -1279,7 +1279,7 @@ export async function handleDiscussToolCall(
     await saveSessions(ctx, chatId, threadId, sessions);
 
     if (transport === "acp") {
-      // `events.emit` is a host RPC \u2014 a rejection must not propagate: this
+      // `events.emit` is a host RPC — a rejection must not propagate: this
       // runs inside handleUpdate's call graph, and an uncaught throw there
       // wedges Telegram polling for every chat.
       await ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
