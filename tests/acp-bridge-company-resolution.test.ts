@@ -37,7 +37,7 @@ function mockCtx(): PluginContext {
       }),
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-    events: { emit: vi.fn(), on: vi.fn() },
+    events: { emit: vi.fn(async () => {}), on: vi.fn() },
   } as unknown as PluginContext;
 }
 

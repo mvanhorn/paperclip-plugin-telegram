@@ -144,12 +144,22 @@ export async function handleMediaMessage(
           projectId,
         );
       } else {
-        ctx.events.emit("acp-spawn", companyId, {
+        // `events.emit` is a host RPC — a rejection must not propagate: this
+        // runs inside handleUpdate's call graph, and an uncaught throw there
+        // wedges Telegram polling for every chat.
+        await ctx.events.emit("acp-spawn", companyId, {
           type: "message",
           sessionId: target.sessionId,
           chatId,
           threadId,
           text: prompt,
+        }).catch((err: unknown) => {
+          ctx.logger.error("Failed to emit acp-spawn for media message", {
+            sessionId: target.sessionId,
+            chatId,
+            threadId,
+            error: String(err),
+          });
         });
       }
     }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getSessions, routeMessageToAgent, handleHandoffToolCall } from "../src/acp-bridge.js";
+import { getSessions, routeMessageToAgent, handleHandoffToolCall, handleAcpCommand, handleDiscussToolCall, handleAcpOutput } from "../src/acp-bridge.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 let sentMessages: Array<{ chatId: string; text: string; options?: Record<string, unknown> }> = [];
@@ -31,7 +31,7 @@ function mockCtx(): PluginContext {
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     events: {
-      emit: vi.fn((event: string, companyId: string, payload: unknown) => {
+      emit: vi.fn(async (event: string, companyId: string, payload: unknown) => {
         emittedEvents.push({ event, companyId, payload });
       }),
       on: vi.fn(),
@@ -347,5 +347,282 @@ describe("handleHandoffToolCall - approval callback data", () => {
 
     const parsed = JSON.parse(result.content!);
     expect(parsed.status).toBe("handed_off");
+  });
+});
+
+// `ctx.events.emit` is a host RPC (Promise<void>). This runs inside
+// handleUpdate's call graph, so an uncaught rejection would wedge Telegram
+// polling for every chat — it must be logged, not left to propagate or drop.
+describe("routeMessageToAgent / executeHandoff - events.emit rejection is caught, not dropped or propagated", () => {
+  it("logs and swallows a rejected acp-spawn emit for a routed message, and still reports success", async () => {
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    stateStore["sessions_chat-1_42"] = [
+      {
+        sessionId: "s1",
+        agentId: "a1",
+        agentName: "builder",
+        agentDisplayName: "Builder",
+        transport: "acp",
+        spawnedAt: "2026-01-01T00:00:00Z",
+        status: "active",
+        lastActivityAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    const result = await routeMessageToAgent(ctx, "token", "chat-1", 42, "@builder hello", undefined, "company-1");
+
+    expect(result).toBe(true);
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn for routed message",
+      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+  });
+
+  it("logs and swallows a rejected acp-spawn emit for handoff context to an existing ACP session", async () => {
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    stateStore["sessions_chat-1_42"] = [{
+      sessionId: "s1",
+      agentId: "agent-1",
+      agentName: "builder",
+      agentDisplayName: "Builder",
+      transport: "acp",
+      spawnedAt: "2026-01-01T00:00:00Z",
+      status: "active",
+      lastActivityAt: "2026-01-01T00:00:00Z",
+    }];
+
+    const result = await handleHandoffToolCall(ctx, "token", {
+      targetAgent: "builder",
+      reason: "needs testing",
+      contextSummary: "code is ready",
+      requiresApproval: false,
+      chatId: "chat-1",
+      threadId: 42,
+    }, "company-1", "agent-1");
+
+    const parsed = JSON.parse(result.content!);
+    expect(parsed.status).toBe("handed_off");
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn for handoff context",
+      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+  });
+
+  it("logs and swallows a rejected acp-spawn emit for an auto-spawned handoff target", async () => {
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    // No existing session for "tester" — executeHandoff must auto-spawn it.
+    stateStore["sessions_chat-1_42"] = [];
+
+    const result = await handleHandoffToolCall(ctx, "token", {
+      targetAgent: "tester",
+      reason: "needs testing",
+      contextSummary: "code is ready",
+      requiresApproval: false,
+      chatId: "chat-1",
+      threadId: 42,
+    }, "company-1", "agent-1");
+
+    const parsed = JSON.parse(result.content!);
+    expect(parsed.status).toBe("handed_off");
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn for auto-spawned handoff target",
+      expect.objectContaining({ chatId: "chat-1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+  });
+});
+
+// `ctx.events.emit` is a host RPC (Promise<void>). This runs inside
+// handleUpdate's call graph, so an uncaught rejection would wedge Telegram
+// polling for every chat — it must be logged, not left to propagate or drop.
+describe("/acp spawn / cancel / close - events.emit rejection is caught, not dropped or propagated", () => {
+  it("logs and swallows a rejected acp-spawn emit, and still confirms the session to the user", async () => {
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+
+    await expect(
+      handleAcpCommand(ctx, "token", "chat-1", "spawn builder", 42, "company-1"),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn",
+      expect.objectContaining({ chatId: "chat-1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+    // The rejection must not have aborted handleAcpSpawn(): the user is still told.
+    expect(sentMessages.some((m) => m.text.includes("Agent Session Started"))).toBe(true);
+  });
+
+  it("logs and swallows a rejected acp-spawn cancel emit, and still answers the user", async () => {
+    stateStore["sessions_chat-1_42"] = [{
+      sessionId: "s1",
+      agentId: "a1",
+      agentName: "builder",
+      agentDisplayName: "Builder",
+      transport: "acp",
+      spawnedAt: "2026-01-01T00:00:00Z",
+      status: "active",
+      lastActivityAt: "2026-01-01T00:00:00Z",
+    }];
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+
+    await expect(
+      handleAcpCommand(ctx, "token", "chat-1", "cancel", 42, "company-1"),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn cancel",
+      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+    expect(sentMessages.some((m) => m.text.includes("Cancellation requested"))).toBe(true);
+  });
+
+  it("logs and swallows a rejected acp-spawn close emit, and still marks the session closed", async () => {
+    stateStore["sessions_chat-1_42"] = [{
+      sessionId: "s1",
+      agentId: "a1",
+      agentName: "builder",
+      agentDisplayName: "Builder",
+      transport: "acp",
+      spawnedAt: "2026-01-01T00:00:00Z",
+      status: "active",
+      lastActivityAt: "2026-01-01T00:00:00Z",
+    }];
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+
+    await expect(
+      handleAcpCommand(ctx, "token", "chat-1", "close", 42, "company-1"),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn close",
+      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+    const sessions = stateStore["sessions_chat-1_42"] as Array<Record<string, unknown>>;
+    expect(sessions[0].status).toBe("closed");
+  });
+});
+
+// `ctx.events.emit` is a host RPC (Promise<void>). This runs inside
+// handleUpdate's call graph, so an uncaught rejection would wedge Telegram
+// polling for every chat — it must be logged, not left to propagate or drop.
+describe("handleDiscussToolCall - events.emit rejection is caught, not dropped or propagated", () => {
+  it("logs and swallows a rejected acp-spawn emit for an auto-spawned discussion target", async () => {
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    stateStore["sessions_chat-1_42"] = []; // no existing target session -> auto-spawn
+
+    const result = await handleDiscussToolCall(ctx, "token", {
+      targetAgent: "tester",
+      topic: "review",
+      initialMessage: "please review this",
+      chatId: "chat-1",
+      threadId: 42,
+    }, "company-1", "agent-1");
+
+    expect(JSON.parse(result.content!).status).toBe("started");
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn for auto-spawned discussion target",
+      expect.objectContaining({ chatId: "chat-1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+  });
+
+  it("logs and swallows a rejected acp-spawn emit for the discussion's initial message to an existing ACP session", async () => {
+    const ctx = mockCtx();
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    stateStore["sessions_chat-1_42"] = [{
+      sessionId: "s1",
+      agentId: "a1",
+      agentName: "tester",
+      agentDisplayName: "Tester",
+      transport: "acp",
+      spawnedAt: "2026-01-01T00:00:00Z",
+      status: "active",
+      lastActivityAt: "2026-01-01T00:00:00Z",
+    }];
+
+    const result = await handleDiscussToolCall(ctx, "token", {
+      targetAgent: "tester",
+      topic: "review",
+      initialMessage: "please review this",
+      chatId: "chat-1",
+      threadId: 42,
+    }, "company-1", "agent-1");
+
+    expect(JSON.parse(result.content!).status).toBe("started");
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn for discussion start",
+      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
+    );
+  });
+});
+
+// checkConversationLoopContinuation runs once per discussion turn, inside
+// handleAcpOutput's call graph off the ACP output event — reachable from
+// handleUpdate the same way. A rejection here must not stall the discussion
+// loop by throwing mid-turn.
+describe("checkConversationLoopContinuation (via handleAcpOutput) - events.emit rejection is caught, not dropped or propagated", () => {
+  it("logs and swallows a rejected acp-spawn emit for a discussion turn, and still advances the loop", async () => {
+    const ctx = mockCtx();
+
+    stateStore["chat_chat-1"] = { companyId: "company-1" };
+    stateStore["sessions_chat-1_42"] = [
+      {
+        sessionId: "initiator-session",
+        agentId: "agent-1",
+        agentName: "builder",
+        agentDisplayName: "Builder",
+        transport: "acp",
+        spawnedAt: "2026-01-01T00:00:00Z",
+        status: "active",
+        lastActivityAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        sessionId: "target-session",
+        agentId: "agent-2",
+        agentName: "tester",
+        agentDisplayName: "Tester",
+        transport: "acp",
+        spawnedAt: "2026-01-01T00:00:00Z",
+        status: "active",
+        lastActivityAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    stateStore["loop_chat-1_42"] = {
+      loopId: "loop-1",
+      initiatorSessionId: "initiator-session",
+      targetSessionId: "target-session",
+      initiatorAgent: "Builder",
+      targetAgent: "Tester",
+      topic: "review",
+      maxTurns: 10,
+      currentTurn: 0,
+      lastOutputHash: null,
+      previousOutputHash: null,
+      status: "active",
+      chatId: "chat-1",
+      threadId: 42,
+    };
+
+    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+
+    await expect(handleAcpOutput(ctx, "token", {
+      sessionId: "initiator-session",
+      chatId: "chat-1",
+      threadId: 42,
+      text: "turn one output",
+      done: false,
+    })).resolves.toBeUndefined();
+
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Failed to emit acp-spawn for discussion turn",
+      expect.objectContaining({ sessionId: "target-session", error: expect.stringContaining("host RPC unavailable") }),
+    );
+    // The rejection must not have aborted the turn: the loop still advanced.
+    const loop = stateStore["loop_chat-1_42"] as Record<string, unknown>;
+    expect(loop.currentTurn).toBe(1);
   });
 });
