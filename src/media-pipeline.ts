@@ -1,3 +1,4 @@
+import { emitOrLog } from "./events.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
@@ -144,23 +145,13 @@ export async function handleMediaMessage(
           projectId,
         );
       } else {
-        // `events.emit` is a host RPC — a rejection must not propagate: this
-        // runs inside handleUpdate's call graph, and an uncaught throw there
-        // wedges Telegram polling for every chat.
-        await ctx.events.emit("acp-spawn", companyId, {
+        await emitOrLog(ctx, "acp-spawn", companyId, {
           type: "message",
           sessionId: target.sessionId,
           chatId,
           threadId,
           text: prompt,
-        }).catch((err: unknown) => {
-          ctx.logger.error("Failed to emit acp-spawn for media message", {
-            sessionId: target.sessionId,
-            chatId,
-            threadId,
-            error: String(err),
-          });
-        });
+        }, "media message", { sessionId: target.sessionId, chatId, threadId });
       }
     }
   }

@@ -1,3 +1,4 @@
+import { emitOrLog } from "./events.js";
 import type { PluginContext, AgentSessionEvent } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { truncateAtWord } from "./telegram-api.js";
@@ -342,23 +343,13 @@ async function handleAcpSpawn(
   await saveSessions(ctx, chatId, messageThreadId, sessions);
 
   if (transport === "acp") {
-    // `events.emit` is a host RPC — a rejection must not propagate: this
-    // runs inside handleUpdate's call graph, and an uncaught throw there
-    // wedges Telegram polling for every chat.
-    await ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "spawn",
       sessionId,
       agentName: trimmedName,
       chatId,
       threadId: messageThreadId,
-    }).catch((err: unknown) => {
-      ctx.logger.error("Failed to emit acp-spawn", {
-        sessionId,
-        chatId,
-        threadId: messageThreadId,
-        error: String(err),
-      });
-    });
+    }, "session spawn", { sessionId, chatId, threadId: messageThreadId });
   }
 
   const agentCount = activeSessions.length + 1;
@@ -477,22 +468,12 @@ async function handleAcpCancel(
       ctx.logger.error("Failed to close native session", { error: String(err) });
     }
   } else {
-    // `events.emit` is a host RPC — a rejection must not propagate: this
-    // runs inside handleUpdate's call graph, and an uncaught throw there
-    // wedges Telegram polling for every chat.
-    await ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "cancel",
       sessionId: target.sessionId,
       chatId,
       threadId: messageThreadId,
-    }).catch((err: unknown) => {
-      ctx.logger.error("Failed to emit acp-spawn cancel", {
-        sessionId: target.sessionId,
-        chatId,
-        threadId: messageThreadId,
-        error: String(err),
-      });
-    });
+    }, "session cancel", { sessionId: target.sessionId, chatId, threadId: messageThreadId });
   }
 
   await sendMessage(
@@ -572,22 +553,12 @@ async function handleAcpClose(
       ctx.logger.error("Failed to close native session", { error: String(err) });
     }
   } else {
-    // `events.emit` is a host RPC — a rejection must not propagate: this
-    // runs inside handleUpdate's call graph, and an uncaught throw there
-    // wedges Telegram polling for every chat.
-    await ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "close",
       sessionId: targetSession.sessionId,
       chatId,
       threadId: messageThreadId,
-    }).catch((err: unknown) => {
-      ctx.logger.error("Failed to emit acp-spawn close", {
-        sessionId: targetSession.sessionId,
-        chatId,
-        threadId: messageThreadId,
-        error: String(err),
-      });
-    });
+    }, "session close", { sessionId: targetSession.sessionId, chatId, threadId: messageThreadId });
   }
 
   // Mark closed
@@ -700,23 +671,13 @@ export async function routeMessageToAgent(
       return false;
     }
   } else {
-    // `events.emit` is a host RPC — a rejection must not propagate: this
-    // runs inside handleUpdate's call graph, and an uncaught throw there
-    // wedges Telegram polling for every chat.
-    await ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "message",
       sessionId: targetSession.sessionId,
       chatId,
       threadId,
       text,
-    }).catch((err: unknown) => {
-      ctx.logger.error("Failed to emit acp-spawn for routed message", {
-        sessionId: targetSession.sessionId,
-        chatId,
-        threadId,
-        error: String(err),
-      });
-    });
+    }, "routed message", { sessionId: targetSession.sessionId, chatId, threadId });
   }
 
   ctx.logger.info("Routed message to agent session", {
@@ -1148,23 +1109,13 @@ async function executeHandoff(
     await saveSessions(ctx, chatId, threadId, sessions);
 
     if (transport === "acp") {
-      // `events.emit` is a host RPC — a rejection must not propagate: this
-      // runs inside handleUpdate's call graph, and an uncaught throw there
-      // wedges Telegram polling for every chat.
-      await ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+      await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
         type: "spawn",
         sessionId,
         agentName: targetAgent,
         chatId,
         threadId,
-      }).catch((err: unknown) => {
-        ctx.logger.error("Failed to emit acp-spawn for auto-spawned handoff target", {
-          sessionId,
-          chatId,
-          threadId,
-          error: String(err),
-        });
-      });
+      }, "handoff target auto-spawn", { sessionId, chatId, threadId });
     }
 
     await sendMessage(
@@ -1186,23 +1137,13 @@ async function executeHandoff(
       "handoff",
     );
   } else {
-    // `events.emit` is a host RPC — a rejection must not propagate: this
-    // runs inside handleUpdate's call graph, and an uncaught throw there
-    // wedges Telegram polling for every chat.
-    await ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
       type: "message",
       sessionId: targetSession.sessionId,
       chatId,
       threadId,
       text: `[Handoff context] ${contextSummary}`,
-    }).catch((err: unknown) => {
-      ctx.logger.error("Failed to emit acp-spawn for handoff context", {
-        sessionId: targetSession.sessionId,
-        chatId,
-        threadId,
-        error: String(err),
-      });
-    });
+    }, "handoff context", { sessionId: targetSession.sessionId, chatId, threadId });
   }
 }
 
@@ -1279,23 +1220,13 @@ export async function handleDiscussToolCall(
     await saveSessions(ctx, chatId, threadId, sessions);
 
     if (transport === "acp") {
-      // `events.emit` is a host RPC — a rejection must not propagate: this
-      // runs inside handleUpdate's call graph, and an uncaught throw there
-      // wedges Telegram polling for every chat.
-      await ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+      await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
         type: "spawn",
         sessionId,
         agentName: targetAgent,
         chatId,
         threadId,
-      }).catch((err: unknown) => {
-        ctx.logger.error("Failed to emit acp-spawn for auto-spawned discussion target", {
-          sessionId,
-          chatId,
-          threadId,
-          error: String(err),
-        });
-      });
+      }, "discussion target auto-spawn", { sessionId, chatId, threadId });
     }
 
     await sendMessage(
@@ -1356,23 +1287,13 @@ export async function handleDiscussToolCall(
       "discussion",
     );
   } else {
-    // `events.emit` is a host RPC — a rejection must not propagate: this
-    // runs inside handleUpdate's call graph, and an uncaught throw there
-    // wedges Telegram polling for every chat.
-    await ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
       type: "message",
       sessionId: targetSession.sessionId,
       chatId,
       threadId,
       text: `[Discussion: ${topic}] ${initialMessage}`,
-    }).catch((err: unknown) => {
-      ctx.logger.error("Failed to emit acp-spawn for discussion start", {
-        sessionId: targetSession.sessionId,
-        chatId,
-        threadId,
-        error: String(err),
-      });
-    });
+    }, "discussion start", { sessionId: targetSession.sessionId, chatId, threadId });
   }
 
   return { content: JSON.stringify({ status: "started", loopId, maxTurns }) };
@@ -1497,24 +1418,13 @@ async function checkConversationLoopContinuation(
           "discussion_turn",
         );
       } else {
-        // `events.emit` is a host RPC — a rejection must not propagate:
-        // this runs once per discussion turn inside handleUpdate's call
-        // graph, and an uncaught throw here wedges Telegram polling for
-        // every chat.
-        await ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+        await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
           type: "message",
           sessionId: nextSessionId,
           chatId,
           threadId,
           text: `[Discussion: ${loop.topic}] ${text}`,
-        }).catch((err: unknown) => {
-          ctx.logger.error("Failed to emit acp-spawn for discussion turn", {
-            sessionId: nextSessionId,
-            chatId,
-            threadId,
-            error: String(err),
-          });
-        });
+        }, "discussion turn", { sessionId: nextSessionId, chatId, threadId });
       }
     }
   }

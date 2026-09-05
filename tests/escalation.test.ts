@@ -1,3 +1,4 @@
+import { expectEmitFailureLogged, rejectEmitOnce } from "./support/emit.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EscalationManager } from "../src/escalation.js";
 import type { EscalationEvent } from "../src/escalation.js";
@@ -559,7 +560,7 @@ describe("EscalationManager - events.emit rejection is caught, not dropped or pr
   it("logs and swallows a rejected escalation.resolved emit", async () => {
     const manager = new EscalationManager();
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     stateStore["escalation_esc-001"] = {
       escalationId: "esc-001",
@@ -586,10 +587,7 @@ describe("EscalationManager - events.emit rejection is caught, not dropped or pr
       }),
     ).resolves.toBeUndefined();
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit escalation.resolved",
-      expect.objectContaining({ escalationId: "esc-001", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "escalation resolved", { escalationId: "esc-001" });
     // The rejection must not have aborted resolve(): state was still updated.
     const stored = stateStore["escalation_esc-001"] as Record<string, unknown>;
     expect(stored.status).toBe("resolved");
@@ -598,7 +596,7 @@ describe("EscalationManager - events.emit rejection is caught, not dropped or pr
   it("logs and swallows a rejected escalation.timed_out emit", async () => {
     const manager = new EscalationManager();
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     stateStore["escalation_pending_ids"] = ["esc-001"];
     stateStore["escalation_esc-001"] = {
@@ -618,10 +616,7 @@ describe("EscalationManager - events.emit rejection is caught, not dropped or pr
 
     await expect(manager.checkTimeouts(ctx, "token")).resolves.toBeUndefined();
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit escalation.timed_out",
-      expect.objectContaining({ escalationId: "esc-001", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "escalation timed out", { escalationId: "esc-001" });
     // The rejection must not have aborted checkTimeouts(): state still moved on.
     const stored = stateStore["escalation_esc-001"] as Record<string, unknown>;
     expect(stored.status).toBe("timed_out");
@@ -630,7 +625,7 @@ describe("EscalationManager - events.emit rejection is caught, not dropped or pr
   it("logs and swallows a rejected acp-spawn emit when routing an escalation reply over ACP", async () => {
     const manager = new EscalationManager();
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     stateStore["escalation_esc-001"] = {
       escalationId: "esc-001",
@@ -659,10 +654,7 @@ describe("EscalationManager - events.emit rejection is caught, not dropped or pr
       }),
     ).resolves.toBeUndefined();
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for escalation reply",
-      expect.objectContaining({ escalationId: "esc-001", sessionId: "sess-acp-1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "escalation reply", { escalationId: "esc-001", sessionId: "sess-acp-1" });
     // The rejection on the ACP route must not have blocked the resolution event after it.
     expect(emittedEvents.some((e) => e.event === "escalation.resolved")).toBe(true);
   });

@@ -1,3 +1,4 @@
+import { emitOrLog } from "./events.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, editMessage, escapeMarkdownV2, truncateAtWord } from "./telegram-api.js";
 import { wakeAgentWithIssue } from "./acp-bridge.js";
@@ -310,21 +311,11 @@ export class EscalationManager {
           "escalation_reply",
         );
       } else if (stored.transport === "acp" && stored.sessionId) {
-        // Route back via ACP event. `events.emit` is a host RPC — a
-        // rejection must not propagate: this runs inside handleUpdate's
-        // call graph, and an uncaught throw there wedges Telegram polling
-        // for every chat (see worker.ts's handleUpdate offset guard).
-        await ctx.events.emit("acp-spawn", stored.companyId, {
+        await emitOrLog(ctx, "acp-spawn", stored.companyId, {
           type: "message",
           sessionId: stored.sessionId,
           text: `[Human escalation response] ${response.responseText}`,
-        }).catch((err: unknown) => {
-          ctx.logger.error("Failed to emit acp-spawn for escalation reply", {
-            escalationId: stored.escalationId,
-            sessionId: stored.sessionId,
-            error: String(err),
-          });
-        });
+        }, "escalation reply", { escalationId: stored.escalationId, sessionId: stored.sessionId });
       }
 
       // Also send to the originating Telegram chat if available
@@ -337,23 +328,13 @@ export class EscalationManager {
       }
     }
 
-    // Emit resolution event - companyId is SECOND arg. `events.emit` is a
-    // host RPC — a rejection must not propagate silently: a human answered
-    // this escalation and the agent needs to hear about it, so a dropped
-    // emit is logged loudly rather than swallowed.
-    await ctx.events.emit("escalation.resolved", stored.companyId, {
+    await emitOrLog(ctx, "escalation.resolved", stored.companyId, {
       escalationId: stored.escalationId,
       agentId: stored.agentId,
       responderId: response.responderId,
       responseText: response.responseText,
       action: response.action,
-    }).catch((err: unknown) => {
-      ctx.logger.error("Failed to emit escalation.resolved", {
-        escalationId: stored.escalationId,
-        companyId: stored.companyId,
-        error: String(err),
-      });
-    });
+    }, "escalation resolved", { escalationId: stored.escalationId });
 
     ctx.logger.info("Escalation resolved", {
       escalationId: stored.escalationId,
@@ -406,22 +387,12 @@ export class EscalationManager {
         { parseMode: "MarkdownV2" },
       );
 
-      // Emit timeout event - companyId is SECOND arg. `events.emit` is a
-      // host RPC — a rejection must not propagate: this runs inside the
-      // check-escalation-timeouts job loop, and an uncaught throw here
-      // would abort the remaining companies' timeout checks for this tick.
-      await ctx.events.emit("escalation.timed_out", stored.companyId, {
+      await emitOrLog(ctx, "escalation.timed_out", stored.companyId, {
         escalationId,
         agentId: stored.agentId,
         defaultAction: stored.defaultAction,
         suggestedReply: stored.suggestedReply,
-      }).catch((err: unknown) => {
-        ctx.logger.error("Failed to emit escalation.timed_out", {
-          escalationId,
-          companyId: stored.companyId,
-          error: String(err),
-        });
-      });
+      }, "escalation timed out", { escalationId });
 
       if (stored.defaultAction === "auto_reply" && stored.suggestedReply && stored.originChatId) {
         await sendMessage(ctx, token, stored.originChatId, esc(stored.suggestedReply), {

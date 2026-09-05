@@ -1,3 +1,4 @@
+import { expectEmitFailureLogged, rejectEmitOnce } from "./support/emit.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getSessions, routeMessageToAgent, handleHandoffToolCall, handleAcpCommand, handleDiscussToolCall, handleAcpOutput } from "../src/acp-bridge.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
@@ -356,7 +357,7 @@ describe("handleHandoffToolCall - approval callback data", () => {
 describe("routeMessageToAgent / executeHandoff - events.emit rejection is caught, not dropped or propagated", () => {
   it("logs and swallows a rejected acp-spawn emit for a routed message, and still reports success", async () => {
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
     stateStore["sessions_chat-1_42"] = [
       {
         sessionId: "s1",
@@ -373,15 +374,12 @@ describe("routeMessageToAgent / executeHandoff - events.emit rejection is caught
     const result = await routeMessageToAgent(ctx, "token", "chat-1", 42, "@builder hello", undefined, "company-1");
 
     expect(result).toBe(true);
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for routed message",
-      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "routed message", { sessionId: "s1" });
   });
 
   it("logs and swallows a rejected acp-spawn emit for handoff context to an existing ACP session", async () => {
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
     stateStore["sessions_chat-1_42"] = [{
       sessionId: "s1",
       agentId: "agent-1",
@@ -404,15 +402,12 @@ describe("routeMessageToAgent / executeHandoff - events.emit rejection is caught
 
     const parsed = JSON.parse(result.content!);
     expect(parsed.status).toBe("handed_off");
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for handoff context",
-      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "handoff context", { sessionId: "s1" });
   });
 
   it("logs and swallows a rejected acp-spawn emit for an auto-spawned handoff target", async () => {
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
     // No existing session for "tester" — executeHandoff must auto-spawn it.
     stateStore["sessions_chat-1_42"] = [];
 
@@ -427,10 +422,7 @@ describe("routeMessageToAgent / executeHandoff - events.emit rejection is caught
 
     const parsed = JSON.parse(result.content!);
     expect(parsed.status).toBe("handed_off");
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for auto-spawned handoff target",
-      expect.objectContaining({ chatId: "chat-1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "handoff target auto-spawn", { chatId: "chat-1" });
   });
 });
 
@@ -440,16 +432,13 @@ describe("routeMessageToAgent / executeHandoff - events.emit rejection is caught
 describe("/acp spawn / cancel / close - events.emit rejection is caught, not dropped or propagated", () => {
   it("logs and swallows a rejected acp-spawn emit, and still confirms the session to the user", async () => {
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     await expect(
       handleAcpCommand(ctx, "token", "chat-1", "spawn builder", 42, "company-1"),
     ).resolves.toBeUndefined();
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn",
-      expect.objectContaining({ chatId: "chat-1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "session spawn", { chatId: "chat-1" });
     // The rejection must not have aborted handleAcpSpawn(): the user is still told.
     expect(sentMessages.some((m) => m.text.includes("Agent Session Started"))).toBe(true);
   });
@@ -466,16 +455,13 @@ describe("/acp spawn / cancel / close - events.emit rejection is caught, not dro
       lastActivityAt: "2026-01-01T00:00:00Z",
     }];
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     await expect(
       handleAcpCommand(ctx, "token", "chat-1", "cancel", 42, "company-1"),
     ).resolves.toBeUndefined();
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn cancel",
-      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "session cancel", { sessionId: "s1" });
     expect(sentMessages.some((m) => m.text.includes("Cancellation requested"))).toBe(true);
   });
 
@@ -491,16 +477,13 @@ describe("/acp spawn / cancel / close - events.emit rejection is caught, not dro
       lastActivityAt: "2026-01-01T00:00:00Z",
     }];
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     await expect(
       handleAcpCommand(ctx, "token", "chat-1", "close", 42, "company-1"),
     ).resolves.toBeUndefined();
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn close",
-      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "session close", { sessionId: "s1" });
     const sessions = stateStore["sessions_chat-1_42"] as Array<Record<string, unknown>>;
     expect(sessions[0].status).toBe("closed");
   });
@@ -512,7 +495,7 @@ describe("/acp spawn / cancel / close - events.emit rejection is caught, not dro
 describe("handleDiscussToolCall - events.emit rejection is caught, not dropped or propagated", () => {
   it("logs and swallows a rejected acp-spawn emit for an auto-spawned discussion target", async () => {
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
     stateStore["sessions_chat-1_42"] = []; // no existing target session -> auto-spawn
 
     const result = await handleDiscussToolCall(ctx, "token", {
@@ -524,15 +507,12 @@ describe("handleDiscussToolCall - events.emit rejection is caught, not dropped o
     }, "company-1", "agent-1");
 
     expect(JSON.parse(result.content!).status).toBe("started");
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for auto-spawned discussion target",
-      expect.objectContaining({ chatId: "chat-1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "discussion target auto-spawn", { chatId: "chat-1" });
   });
 
   it("logs and swallows a rejected acp-spawn emit for the discussion's initial message to an existing ACP session", async () => {
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
     stateStore["sessions_chat-1_42"] = [{
       sessionId: "s1",
       agentId: "a1",
@@ -553,10 +533,7 @@ describe("handleDiscussToolCall - events.emit rejection is caught, not dropped o
     }, "company-1", "agent-1");
 
     expect(JSON.parse(result.content!).status).toBe("started");
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for discussion start",
-      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "discussion start", { sessionId: "s1" });
   });
 });
 
@@ -607,7 +584,7 @@ describe("checkConversationLoopContinuation (via handleAcpOutput) - events.emit 
       threadId: 42,
     };
 
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     await expect(handleAcpOutput(ctx, "token", {
       sessionId: "initiator-session",
@@ -617,10 +594,7 @@ describe("checkConversationLoopContinuation (via handleAcpOutput) - events.emit 
       done: false,
     })).resolves.toBeUndefined();
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for discussion turn",
-      expect.objectContaining({ sessionId: "target-session", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "discussion turn", { sessionId: "target-session" });
     // The rejection must not have aborted the turn: the loop still advanced.
     const loop = stateStore["loop_chat-1_42"] as Record<string, unknown>;
     expect(loop.currentTurn).toBe(1);

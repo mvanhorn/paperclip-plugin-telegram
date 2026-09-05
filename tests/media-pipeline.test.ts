@@ -1,3 +1,4 @@
+import { expectEmitFailureLogged, rejectEmitOnce } from "./support/emit.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleMediaMessage } from "../src/media-pipeline.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
@@ -343,7 +344,7 @@ describe("Media routing - events.emit rejection is caught, not dropped or propag
     }];
 
     const ctx = mockCtx();
-    (ctx.events.emit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("host RPC unavailable"));
+    rejectEmitOnce(ctx);
 
     await expect(handleMediaMessage(ctx, "token", {
       message_id: 1,
@@ -353,10 +354,7 @@ describe("Media routing - events.emit rejection is caught, not dropped or propag
       caption: "Check this",
     }, { ...defaultConfig, briefAgentChatIds: [] }, "company-1")).resolves.toBe(true);
 
-    expect(ctx.logger.error).toHaveBeenCalledWith(
-      "Failed to emit acp-spawn for media message",
-      expect.objectContaining({ sessionId: "s1", error: expect.stringContaining("host RPC unavailable") }),
-    );
+    expectEmitFailureLogged(ctx, "media message", { sessionId: "s1" });
   });
 });
 
