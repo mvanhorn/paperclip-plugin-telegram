@@ -1,3 +1,4 @@
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
@@ -401,9 +402,11 @@ async function connectCompanies(ctx: PluginContext, companyIds?: readonly string
   const companies = await Promise.all(companyIds.map(async (id) => {
     try {
       return await ctx.companies.get(id);
-    } catch {
-      // A company may have been removed or its plugin access revoked.
-      return null;
+    } catch (err) {
+      // Revoked scopes are unavailable, but a timeout or host failure must
+      // remain an error instead of masquerading as a missing company.
+      if (err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED) return null;
+      throw err;
     }
   }));
   return companies.filter((company) => company !== null);
@@ -423,7 +426,7 @@ async function handleConnect(
       const names = companies.map((c) => c.name || c.id).join(", ");
       await sendMessage(ctx, token, chatId, `Usage: /connect <company-name>\nAvailable: ${names || "none"}`, { messageThreadId });
     } catch {
-      await sendMessage(ctx, token, chatId, "Usage: /connect <company-name>", { messageThreadId });
+      await sendMessage(ctx, token, chatId, "Usage: /connect <company-name>\nCould not load available companies. Please try again.", { messageThreadId });
     }
     return;
   }

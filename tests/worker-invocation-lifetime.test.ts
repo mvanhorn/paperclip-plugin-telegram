@@ -1,6 +1,6 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { startWorkerRpcHost } from "@paperclipai/plugin-sdk";
+import { startWorkerRpcHost, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
 
 type Rpc = { jsonrpc: "2.0"; id?: string | number; method?: string; params?: any; result?: any; error?: any; paperclipInvocationId?: string };
@@ -32,6 +32,7 @@ describe("polling invocation lifetime", () => {
     const config = { telegramBotTokenRef: "test-reference", enableCommands: true, enableInbound: true };
     let heldDelivery: Rpc | undefined;
     let deliveryB: Promise<Rpc> | undefined;
+    let transientLookupFailure = false;
     let sequence = 0;
     let buffer = "";
     const reply = (request: Rpc, result: unknown) => stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\n");
@@ -52,15 +53,21 @@ describe("polling invocation lifetime", () => {
       const invalid = invocation ? !active.has(invocation) : !allowed && active.size > 0;
       if ((wildcard || companyId) && (invalid || (!wildcard && allowed !== companyId))) {
         failures.push(`${request.method}:${invocation ?? "proactive"}:${companyId ?? "wildcard"}`);
-        stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "missing, expired, or unknown invocation scope" } }) + "\n");
+        stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED, message: "missing, expired, or unknown invocation scope" } }) + "\n");
         return;
       }
       if (request.method === "companies.list" && invocation === "delivery-b") {
         heldDelivery = request;
         return;
       }
+      if (request.method === "companies.get" && transientLookupFailure && p.companyId === "company-a") {
+        stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: {
+          code: PLUGIN_RPC_ERROR_CODES.TIMEOUT, message: "Company lookup timed out",
+        } }) + "\n");
+        return;
+      }
       switch (request.method) {
-        case "companies.list": reply(request, companies.filter((c) => c.id === allowed)); break;
+        case "companies.list": reply(request, allowed ? companies.filter((c) => c.id === allowed) : companies); break;
         case "companies.get": reply(request, companies.find((c) => c.id === p.companyId) ?? null); break;
         case "config.get": reply(request, config); break;
         case "secrets.resolve": reply(request, "test-token"); break;
@@ -145,6 +152,12 @@ describe("polling invocation lifetime", () => {
       await vi.waitFor(() => expect(polls).toHaveLength(1));
       expect(sent.some((m) => String(m.chat_id) === "333" && m.text === 'Company "Company B" not found. Available: Company A')).toBe(true);
       expect([...state.entries()].some(([key]) => key.includes("chat_333"))).toBe(false);
+      transientLookupFailure = true;
+      deliverUpdates(polls.shift()!, ["/connect Company A", "/connect"], 444);
+      await vi.waitFor(() => expect(polls).toHaveLength(1));
+      expect(sent.some((m) => String(m.chat_id) === "444" && m.text === "Failed to connect: Company lookup timed out")).toBe(true);
+      expect(sent.some((m) => String(m.chat_id) === "444" && m.text.includes("Could not load available companies"))).toBe(true);
+      expect([...state.entries()].some(([key]) => key.includes("chat_444"))).toBe(false);
     } finally {
       if (heldDelivery) {
         reply(heldDelivery, []);
