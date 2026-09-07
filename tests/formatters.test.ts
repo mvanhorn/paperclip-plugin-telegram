@@ -276,6 +276,69 @@ describe("formatAgentError", () => {
     expect(msg.text).toContain("Deployer");
     expect(msg.text).not.toContain("Agent ID:");
   });
+
+  it("replaces View Run with a Full error button when the message is truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard![0];
+    const fullError = buttons.find((b) => b.text === "Full error ↗");
+    expect(fullError).toBeDefined();
+    expect(fullError!.url).toBe("https://app.example.com/agents/agent-1/runs/run-1");
+    expect(buttons.find((b) => b.text === "View Run ↗")).toBeUndefined();
+  });
+
+  // fullErrorButton and runButton render the same `/runs/:runId` URL under
+  // overlapping conditions, so a regression that brings both back would
+  // produce two differently-labeled buttons pointing at an identical href.
+  // Reintroducing that bug (rendering runButton unconditionally) makes this
+  // assertion fail.
+  it("never renders two buttons pointing at the same run URL", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard![0];
+    const runUrl = "https://app.example.com/agents/agent-1/runs/run-1";
+    const buttonsToRunPage = buttons.filter((b) => b.url === runUrl);
+    expect(buttonsToRunPage).toHaveLength(1);
+    expect(buttonsToRunPage[0].text).toBe("Full error ↗");
+  });
+
+  it("keeps the keyboard row to three buttons or fewer even when truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({
+        agentId: "agent-1",
+        error: "x".repeat(600),
+        runId: "run-1",
+        issueIdentifier: "PROJ-1",
+      }),
+      { baseUrl: "https://app.example.com", issuePrefix: "proj" },
+    );
+    const buttons = msg.options.inlineKeyboard![0];
+    expect(buttons.length).toBeLessThanOrEqual(3);
+  });
+
+  it("falls back to View Run when the message is not truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "short error", runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard?.[0] ?? [];
+    expect(buttons.find((b) => b.text === "Full error ↗")).toBeUndefined();
+    expect(buttons.find((b) => b.text === "View Run ↗")).toBeDefined();
+  });
+
+  it("falls back to View Run when there is no runId to link the Full error button to, even if truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: undefined }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard?.[0] ?? [];
+    expect(buttons.find((b) => b.text === "Full error ↗")).toBeUndefined();
+    expect(buttons.find((b) => b.text === "View Run ↗")).toBeUndefined();
+  });
 });
 
 describe("formatAgentRunStarted", () => {
@@ -317,5 +380,91 @@ describe("formatAgentRunFinished", () => {
   it("disables notification", () => {
     const msg = formatAgentRunFinished(mockEvent());
     expect(msg.options.disableNotification).toBe(true);
+  });
+});
+
+// Regression test: event/tool payloads arrive as `Record<string, unknown>` off the
+// wire. A field that turns out to be an object rather than a primitive must
+// never reach `String()` directly, or the Telegram message renders the
+// literal text "[object Object]" instead of failing loudly.
+describe("object-valued payload fields never render [object Object]", () => {
+  const objectField = { nested: "value" };
+
+  it("formatIssueCreated falls back instead of stringifying object fields", () => {
+    const msg = formatIssueCreated(mockEvent({
+      identifier: objectField,
+      title: objectField,
+      status: objectField,
+      priority: objectField,
+      assigneeName: objectField,
+      projectName: objectField,
+      description: objectField,
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("iss\\-123"); // falls back to entityId
+    expect(msg.text).toContain("Untitled");
+  });
+
+  it("formatIssueAssigned falls back instead of stringifying object fields", () => {
+    const msg = formatIssueAssigned(mockEvent({
+      identifier: objectField,
+      title: objectField,
+      assigneeName: objectField,
+      _previous: { assigneeName: objectField },
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("Unassigned");
+  });
+
+  it("formatIssueDone falls back instead of stringifying object fields", () => {
+    const msg = formatIssueDone(mockEvent({
+      identifier: objectField,
+      title: objectField,
+      comment: objectField,
+    }));
+    expect(msg.text).not.toContain("object Object");
+  });
+
+  it("formatApprovalCreated falls back instead of stringifying object fields, including nested linked issues", () => {
+    const msg = formatApprovalCreated(mockEvent({
+      type: objectField,
+      approvalId: objectField,
+      title: objectField,
+      description: objectField,
+      agentName: "Bot", // kept a real string so the "Type:" line renders below
+      linkedIssues: [
+        { identifier: objectField, title: objectField, status: objectField, priority: objectField, assignee: objectField },
+      ],
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("unknown"); // approvalType fallback
+  });
+
+  it("formatAgentError falls back instead of stringifying object fields", () => {
+    const msg = formatAgentError(mockEvent({
+      agentId: objectField,
+      agentName: objectField,
+      name: objectField,
+      error: objectField,
+      message: objectField,
+      runId: objectField,
+      companyName: objectField,
+      issueIdentifier: objectField,
+      issueTitle: objectField,
+    }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("Unknown error");
+  });
+
+  it("formatAgentRunStarted falls back to entityId when agentId and agentName are objects", () => {
+    const msg = formatAgentRunStarted(mockEvent({ agentId: objectField, agentName: objectField }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("iss\\-123");
+  });
+
+  it("formatAgentRunFinished falls back to entityId when agentId and agentName are objects", () => {
+    const msg = formatAgentRunFinished(mockEvent({ agentId: objectField, agentName: objectField }));
+    expect(msg.text).not.toContain("object Object");
+    expect(msg.text).toContain("iss\\-123");
   });
 });

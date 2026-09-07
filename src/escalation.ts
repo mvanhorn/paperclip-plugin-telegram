@@ -1,3 +1,4 @@
+import { emitOrLog } from "./events.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, editMessage, escapeMarkdownV2, truncateAtWord } from "./telegram-api.js";
 import { wakeAgentWithIssue } from "./acp-bridge.js";
@@ -310,12 +311,11 @@ export class EscalationManager {
           "escalation_reply",
         );
       } else if (stored.transport === "acp" && stored.sessionId) {
-        // Route back via ACP event
-        ctx.events.emit("acp-spawn", stored.companyId, {
+        await emitOrLog(ctx, "acp-spawn", stored.companyId, {
           type: "message",
           sessionId: stored.sessionId,
           text: `[Human escalation response] ${response.responseText}`,
-        });
+        }, "escalation reply", { escalationId: stored.escalationId, sessionId: stored.sessionId });
       }
 
       // Also send to the originating Telegram chat if available
@@ -328,14 +328,13 @@ export class EscalationManager {
       }
     }
 
-    // Emit resolution event - companyId is SECOND arg
-    ctx.events.emit("escalation.resolved", stored.companyId, {
+    await emitOrLog(ctx, "escalation.resolved", stored.companyId, {
       escalationId: stored.escalationId,
       agentId: stored.agentId,
       responderId: response.responderId,
       responseText: response.responseText,
       action: response.action,
-    });
+    }, "escalation resolved", { escalationId: stored.escalationId });
 
     ctx.logger.info("Escalation resolved", {
       escalationId: stored.escalationId,
@@ -388,13 +387,12 @@ export class EscalationManager {
         { parseMode: "MarkdownV2" },
       );
 
-      // Emit timeout event - companyId is SECOND arg
-      ctx.events.emit("escalation.timed_out", stored.companyId, {
+      await emitOrLog(ctx, "escalation.timed_out", stored.companyId, {
         escalationId,
         agentId: stored.agentId,
         defaultAction: stored.defaultAction,
         suggestedReply: stored.suggestedReply,
-      });
+      }, "escalation timed out", { escalationId });
 
       if (stored.defaultAction === "auto_reply" && stored.suggestedReply && stored.originChatId) {
         await sendMessage(ctx, token, stored.originChatId, esc(stored.suggestedReply), {

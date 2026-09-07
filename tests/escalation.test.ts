@@ -1,3 +1,4 @@
+import { expectEmitFailureLogged, rejectEmitOnce } from "./support/emit.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EscalationManager } from "../src/escalation.js";
 import type { EscalationEvent } from "../src/escalation.js";
@@ -35,7 +36,7 @@ function mockCtx(): PluginContext {
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     events: {
-      emit: vi.fn((event: string, companyId: string, payload: unknown) => {
+      emit: vi.fn(async (event: string, companyId: string, payload: unknown) => {
         emittedEvents.push({ event, companyId, payload });
       }),
     },
@@ -546,5 +547,115 @@ describe("EscalationManager.respond", () => {
     });
 
     expect(editedMessages.length).toBe(0);
+  });
+});
+
+// `ctx.events.emit` is a host RPC (Promise<void>) that the plugin cannot
+// control. These prove a rejection is logged, not swallowed — and, just as
+// important, that it does NOT propagate: this code runs inside
+// handleUpdate's call graph and check-escalation-timeouts' job loop, and an
+// uncaught throw either wedges Telegram polling for every chat or aborts
+// the remaining companies' timeout checks for that tick.
+describe("EscalationManager - events.emit rejection is caught, not dropped or propagated", () => {
+  it("logs and swallows a rejected escalation.resolved emit", async () => {
+    const manager = new EscalationManager();
+    const ctx = mockCtx();
+    rejectEmitOnce(ctx);
+
+    stateStore["escalation_esc-001"] = {
+      escalationId: "esc-001",
+      agentId: "agent-1",
+      companyId: "company-1",
+      reason: "low_confidence",
+      agentReasoning: "test",
+      suggestedActions: [],
+      escalationChatId: "esc-chat-1",
+      escalationMessageId: "42",
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      timeoutAt: new Date(Date.now() + 60000).toISOString(),
+      defaultAction: "defer",
+    };
+    stateStore["escalation_pending_ids"] = ["esc-001"];
+
+    await expect(
+      manager.respond(ctx, "token", "esc-001", {
+        escalationId: "esc-001",
+        responderId: "user-1",
+        responseText: "Here is the answer",
+        action: "reply_to_customer",
+      }),
+    ).resolves.toBeUndefined();
+
+    expectEmitFailureLogged(ctx, "escalation resolved", { escalationId: "esc-001" });
+    // The rejection must not have aborted resolve(): state was still updated.
+    const stored = stateStore["escalation_esc-001"] as Record<string, unknown>;
+    expect(stored.status).toBe("resolved");
+  });
+
+  it("logs and swallows a rejected escalation.timed_out emit", async () => {
+    const manager = new EscalationManager();
+    const ctx = mockCtx();
+    rejectEmitOnce(ctx);
+
+    stateStore["escalation_pending_ids"] = ["esc-001"];
+    stateStore["escalation_esc-001"] = {
+      escalationId: "esc-001",
+      agentId: "agent-1",
+      companyId: "company-1",
+      reason: "low_confidence",
+      agentReasoning: "test",
+      suggestedActions: [],
+      escalationChatId: "esc-chat-1",
+      escalationMessageId: "42",
+      status: "pending",
+      createdAt: new Date(Date.now() - 120000).toISOString(),
+      timeoutAt: new Date(Date.now() - 60000).toISOString(),
+      defaultAction: "defer",
+    };
+
+    await expect(manager.checkTimeouts(ctx, "token")).resolves.toBeUndefined();
+
+    expectEmitFailureLogged(ctx, "escalation timed out", { escalationId: "esc-001" });
+    // The rejection must not have aborted checkTimeouts(): state still moved on.
+    const stored = stateStore["escalation_esc-001"] as Record<string, unknown>;
+    expect(stored.status).toBe("timed_out");
+  });
+
+  it("logs and swallows a rejected acp-spawn emit when routing an escalation reply over ACP", async () => {
+    const manager = new EscalationManager();
+    const ctx = mockCtx();
+    rejectEmitOnce(ctx);
+
+    stateStore["escalation_esc-001"] = {
+      escalationId: "esc-001",
+      agentId: "agent-1",
+      companyId: "company-1",
+      reason: "low_confidence",
+      agentReasoning: "test",
+      suggestedActions: [],
+      escalationChatId: "esc-chat-1",
+      escalationMessageId: "42",
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      timeoutAt: new Date(Date.now() + 60000).toISOString(),
+      defaultAction: "defer",
+      transport: "acp",
+      sessionId: "sess-acp-1",
+    };
+    stateStore["escalation_pending_ids"] = ["esc-001"];
+
+    await expect(
+      manager.respond(ctx, "token", "esc-001", {
+        escalationId: "esc-001",
+        responderId: "user-1",
+        responseText: "Here is the answer",
+        action: "reply_to_customer",
+      }),
+    ).resolves.toBeUndefined();
+
+    expectEmitFailureLogged(ctx, "escalation reply", { escalationId: "esc-001", sessionId: "sess-acp-1" });
+    // The rejection on the ACP route must not have blocked the resolution event after it.
+    expect(emittedEvents.some((e) => e.event === "escalation.resolved")).toBe(true);
   });
 });

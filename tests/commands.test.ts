@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleCommand, BOT_COMMANDS, handleConnectTopic, getTopicForProject, resolveNotificationThreadId } from "../src/commands.js";
+import { handleCommand, BOT_COMMANDS, HELP_GROUPS, handleConnectTopic, getTopicForProject, resolveNotificationThreadId } from "../src/commands.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 let sentMessages: Array<{ chatId: string; text: string; options?: Record<string, unknown> }> = [];
@@ -90,6 +90,28 @@ describe("handleCommand", () => {
     await handleCommand(ctx, "token", "123", "help", "");
     expect(sentMessages.length).toBe(1);
     expect(sentMessages[0].text).toContain("Paperclip Bot Commands");
+  });
+
+  it("groups /help by task instead of listing commands flat", async () => {
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "help", "");
+    const text = sentMessages[0].text;
+    for (const group of HELP_GROUPS) {
+      expect(text).toContain(group.title);
+    }
+  });
+
+  it("inlines subcommand grammar for /acp, /commands, and /topics in /help", async () => {
+    // These commands only printed their subcommand list when invoked bare —
+    // a first-time user had no way to discover "spawn/status/cancel/close"
+    // etc. without already knowing to try that. /help must surface it.
+    const ctx = mockCtx();
+    await handleCommand(ctx, "token", "123", "help", "");
+    const text = sentMessages[0].text;
+    expect(text).toContain("spawn");
+    expect(text).toContain("cancel");
+    expect(text).toContain("import");
+    expect(text).toContain("remove");
   });
 
   it("routes /status command and shows agent/issue counts", async () => {
@@ -563,5 +585,21 @@ describe("BOT_COMMANDS", () => {
     expect(names).toContain("connect");
     expect(names).toContain("connect_topic");
     expect(names).toContain("topics");
+  });
+});
+
+describe("HELP_GROUPS", () => {
+  it("covers every BOT_COMMANDS entry exactly once", () => {
+    // Each group entry's usage starts with the bare command, e.g.
+    // "/acp <spawn|status|cancel|close>" -> "acp". Extracted this way so the
+    // grouped /help copy can't silently drift from the command set that
+    // actually gets registered with Telegram.
+    const groupedCommands = HELP_GROUPS.flatMap((group) =>
+      group.entries.map((entry) => entry.usage.slice(1).split(/[\s<]/)[0]),
+    );
+    const botCommandNames = BOT_COMMANDS.map((c) => c.command);
+
+    expect(groupedCommands.sort()).toEqual([...botCommandNames].sort());
+    expect(new Set(groupedCommands).size).toBe(groupedCommands.length);
   });
 });
