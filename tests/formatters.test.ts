@@ -72,6 +72,21 @@ describe("formatIssueCreated", () => {
     }));
     expect(msg.text).not.toContain("\\|");
   });
+
+  it.each(["low", "medium"])("is silent for %s priority", (priority) => {
+    const msg = formatIssueCreated(mockEvent({ priority }));
+    expect(msg.options.disableNotification).toBe(true);
+  });
+
+  it.each(["high", "critical"])("is loud for %s priority", (priority) => {
+    const msg = formatIssueCreated(mockEvent({ priority }));
+    expect(msg.options.disableNotification).toBeUndefined();
+  });
+
+  it("is loud when priority is missing", () => {
+    const msg = formatIssueCreated(mockEvent({ priority: undefined }));
+    expect(msg.options.disableNotification).toBeUndefined();
+  });
 });
 
 describe("formatIssueDone", () => {
@@ -102,6 +117,16 @@ describe("formatIssueDone", () => {
     // Should only have the title and done line, no blockquote
     const lines = msg.text.split("\n").filter((l: string) => l.trim());
     expect(lines.length).toBe(2);
+  });
+
+  it("is silent for low/medium priority", () => {
+    expect(formatIssueDone(mockEvent({ priority: "low" })).options.disableNotification).toBe(true);
+    expect(formatIssueDone(mockEvent({ priority: "medium" })).options.disableNotification).toBe(true);
+  });
+
+  it("is loud for high/critical priority", () => {
+    expect(formatIssueDone(mockEvent({ priority: "high" })).options.disableNotification).toBeUndefined();
+    expect(formatIssueDone(mockEvent({ priority: "critical" })).options.disableNotification).toBeUndefined();
   });
 });
 
@@ -148,6 +173,16 @@ describe("formatIssueAssigned", () => {
     const msg = formatIssueAssigned(mockEvent({ identifier: undefined, assigneeName: "Nuno" }));
     expect(msg.text).toContain("iss\\-123");
   });
+
+  it("is silent for low/medium priority", () => {
+    expect(formatIssueAssigned(mockEvent({ assigneeName: "Nuno", priority: "low" })).options.disableNotification).toBe(true);
+    expect(formatIssueAssigned(mockEvent({ assigneeName: "Nuno", priority: "medium" })).options.disableNotification).toBe(true);
+  });
+
+  it("is loud for high/critical priority", () => {
+    expect(formatIssueAssigned(mockEvent({ assigneeName: "Nuno", priority: "high" })).options.disableNotification).toBeUndefined();
+    expect(formatIssueAssigned(mockEvent({ assigneeName: "Nuno", priority: "critical" })).options.disableNotification).toBeUndefined();
+  });
 });
 
 describe("formatApprovalCreated", () => {
@@ -170,6 +205,13 @@ describe("formatApprovalCreated", () => {
     const msg = formatApprovalCreated(mockEvent({ approvalId: undefined }));
     const buttons = msg.options.inlineKeyboard![0];
     expect(buttons[0].callback_data).toBe("approve_iss-123");
+  });
+
+  it("is always loud, regardless of any linked issue priority", () => {
+    const msg = formatApprovalCreated(mockEvent({
+      linkedIssues: [{ identifier: "PROJ-1", title: "Low priority thing", priority: "low" }],
+    }));
+    expect(msg.options.disableNotification).toBeUndefined();
   });
 
   it("includes agent name when provided", () => {
