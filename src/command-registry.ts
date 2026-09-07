@@ -1,26 +1,27 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction, answerCallbackQuery, editMessage } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
+import { validateCommandDefinition } from "./command-definition-validation.js";
 
 // --- Types ---
 
-type WorkflowStepBase = {
+export type WorkflowStepBase = {
   id: string;
   name?: string;
 };
 
-type FetchIssueStep = WorkflowStepBase & {
+export type FetchIssueStep = WorkflowStepBase & {
   type: "fetch_issue";
   issueId: string; // supports {{arg1}} template
 };
 
-type InvokeAgentStep = WorkflowStepBase & {
+export type InvokeAgentStep = WorkflowStepBase & {
   type: "invoke_agent";
   agentId: string;
   prompt: string; // supports {{prev.result}}, {{arg1}} etc.
 };
 
-type HttpRequestStep = WorkflowStepBase & {
+export type HttpRequestStep = WorkflowStepBase & {
   type: "http_request";
   url: string;
   method: "GET" | "POST" | "PUT" | "DELETE";
@@ -28,12 +29,12 @@ type HttpRequestStep = WorkflowStepBase & {
   body?: string;
 };
 
-type SendMessageStep = WorkflowStepBase & {
+export type SendMessageStep = WorkflowStepBase & {
   type: "send_message";
   text: string;
 };
 
-type CreateIssueStep = WorkflowStepBase & {
+export type CreateIssueStep = WorkflowStepBase & {
   type: "create_issue";
   title: string;
   description?: string;
@@ -41,19 +42,19 @@ type CreateIssueStep = WorkflowStepBase & {
   assigneeAgentId?: string;
 };
 
-type WaitApprovalStep = WorkflowStepBase & {
+export type WaitApprovalStep = WorkflowStepBase & {
   type: "wait_approval";
   prompt: string;
   timeoutMs?: number;
 };
 
-type SetStateStep = WorkflowStepBase & {
+export type SetStateStep = WorkflowStepBase & {
   type: "set_state";
   key: string;
   value: string;
 };
 
-type WorkflowStep =
+export type WorkflowStep =
   | FetchIssueStep
   | InvokeAgentStep
   | HttpRequestStep
@@ -62,7 +63,7 @@ type WorkflowStep =
   | WaitApprovalStep
   | SetStateStep;
 
-type CustomCommand = {
+export type CustomCommand = {
   name: string;
   description: string;
   steps: WorkflowStep[];
@@ -237,35 +238,24 @@ async function importCommand(
     return;
   }
 
-  let definition: { name: string; description: string; steps: WorkflowStep[] };
+  let parsed: unknown;
   try {
-    definition = JSON.parse(jsonStr);
+    parsed = JSON.parse(jsonStr);
   } catch {
     await sendMessage(ctx, token, chatId, "Invalid JSON. Please provide a valid command definition.", { messageThreadId });
     return;
   }
 
-  if (!definition.name || !definition.steps || !Array.isArray(definition.steps)) {
-    await sendMessage(ctx, token, chatId, "Command definition must have 'name' and 'steps' fields.", { messageThreadId });
+  const validation = validateCommandDefinition(parsed);
+  if (!validation.ok) {
+    await sendMessage(ctx, token, chatId, validation.error, { messageThreadId });
     return;
   }
+  const definition = validation.definition;
 
   if (BUILTIN_COMMANDS.has(definition.name)) {
     await sendMessage(ctx, token, chatId, `Cannot override built-in command: /${definition.name}`, { messageThreadId });
     return;
-  }
-
-  // Validate steps
-  for (const step of definition.steps) {
-    if (!step.type || !step.id) {
-      await sendMessage(ctx, token, chatId, "Each step must have 'type' and 'id' fields.", { messageThreadId });
-      return;
-    }
-    const validTypes = ["fetch_issue", "invoke_agent", "http_request", "send_message", "create_issue", "wait_approval", "set_state"];
-    if (!validTypes.includes(step.type)) {
-      await sendMessage(ctx, token, chatId, `Invalid step type: ${step.type}. Valid: ${validTypes.join(", ")}`, { messageThreadId });
-      return;
-    }
   }
 
   const resolvedCompanyId = companyId ?? chatId;
@@ -275,7 +265,7 @@ async function importCommand(
   const existingIdx = commands.findIndex((c) => c.name === definition.name);
   const newCmd: CustomCommand = {
     name: definition.name,
-    description: definition.description ?? "No description",
+    description: definition.description,
     steps: definition.steps,
     createdBy: `telegram:${chatId}`,
     createdAt: new Date().toISOString(),
