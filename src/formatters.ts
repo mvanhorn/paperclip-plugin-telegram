@@ -1,6 +1,7 @@
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { escapeMarkdownV2, truncateAtWord } from "./telegram-api.js";
 import type { SendMessageOptions } from "./telegram-api.js";
+import { AGENT_ERROR_TRUNCATE_LENGTH } from "./constants.js";
 
 type Payload = Record<string, unknown>;
 
@@ -60,6 +61,20 @@ function displayAgentName(value: string): string {
 function runButton(agentId: string, runId: string | null, publicUrl?: string): { text: string; url: string } | null {
   if (publicUrl && isExternalUrl(publicUrl) && runId) {
     return { text: "View Run ↗", url: `${publicUrl}/agents/${agentId}/runs/${runId}` };
+  }
+  return null;
+}
+
+// Renders only when the inline error text was cut, and takes runButton's
+// place in the keyboard row rather than sitting alongside it: the run
+// dashboard exposes no error-anchored URL, so both buttons would point at
+// the identical `/runs/:runId` page. Two labels for one URL reads as
+// broken, so the more accurate label ("Full error", surfaced right below
+// the truncated text it completes) wins the slot; formatAgentError falls
+// back to runButton when the message wasn't truncated.
+function fullErrorButton(agentId: string, runId: string | null, publicUrl?: string): { text: string; url: string } | null {
+  if (publicUrl && isExternalUrl(publicUrl) && runId) {
+    return { text: "Full error ↗", url: `${publicUrl}/agents/${agentId}/runs/${runId}` };
   }
   return null;
 }
@@ -249,10 +264,15 @@ export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): For
         : `Issue: ${issueLink(issueIdentifier, opts)}`,
     );
   }
-  lines.push(`\n${code(truncateAtWord(errorMessage, 500))}`);
+  const isTruncated = errorMessage.length > AGENT_ERROR_TRUNCATE_LENGTH;
+  lines.push(`\n${code(truncateAtWord(errorMessage, AGENT_ERROR_TRUNCATE_LENGTH))}`);
 
+  // fullErrorButton and runButton point at the same run page, so only one
+  // occupies the slot — never both.
+  const fullError = isTruncated ? fullErrorButton(agentId, runId, opts?.baseUrl) : null;
   const buttons = [
-    runButton(agentId, runId, opts?.baseUrl),
+    fullError,
+    fullError ? null : runButton(agentId, runId, opts?.baseUrl),
     issueIdentifier ? issueButton(issueIdentifier, opts) : null,
     agentButton(agentId, "View Agent ↗", opts?.baseUrl),
   ].filter((button): button is { text: string; url: string } => Boolean(button));

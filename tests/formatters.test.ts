@@ -234,6 +234,69 @@ describe("formatAgentError", () => {
     expect(msg.text).toContain("Deployer");
     expect(msg.text).not.toContain("Agent ID:");
   });
+
+  it("replaces View Run with a Full error button when the message is truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard![0];
+    const fullError = buttons.find((b) => b.text === "Full error ↗");
+    expect(fullError).toBeDefined();
+    expect(fullError!.url).toBe("https://app.example.com/agents/agent-1/runs/run-1");
+    expect(buttons.find((b) => b.text === "View Run ↗")).toBeUndefined();
+  });
+
+  // fullErrorButton and runButton render the same `/runs/:runId` URL under
+  // overlapping conditions, so a regression that brings both back would
+  // produce two differently-labeled buttons pointing at an identical href.
+  // Reintroducing that bug (rendering runButton unconditionally) makes this
+  // assertion fail.
+  it("never renders two buttons pointing at the same run URL", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard![0];
+    const runUrl = "https://app.example.com/agents/agent-1/runs/run-1";
+    const buttonsToRunPage = buttons.filter((b) => b.url === runUrl);
+    expect(buttonsToRunPage).toHaveLength(1);
+    expect(buttonsToRunPage[0].text).toBe("Full error ↗");
+  });
+
+  it("keeps the keyboard row to three buttons or fewer even when truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({
+        agentId: "agent-1",
+        error: "x".repeat(600),
+        runId: "run-1",
+        issueIdentifier: "PROJ-1",
+      }),
+      { baseUrl: "https://app.example.com", issuePrefix: "proj" },
+    );
+    const buttons = msg.options.inlineKeyboard![0];
+    expect(buttons.length).toBeLessThanOrEqual(3);
+  });
+
+  it("falls back to View Run when the message is not truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "short error", runId: "run-1" }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard?.[0] ?? [];
+    expect(buttons.find((b) => b.text === "Full error ↗")).toBeUndefined();
+    expect(buttons.find((b) => b.text === "View Run ↗")).toBeDefined();
+  });
+
+  it("falls back to View Run when there is no runId to link the Full error button to, even if truncated", () => {
+    const msg = formatAgentError(
+      mockEvent({ agentId: "agent-1", error: "x".repeat(600), runId: undefined }),
+      { baseUrl: "https://app.example.com" },
+    );
+    const buttons = msg.options.inlineKeyboard?.[0] ?? [];
+    expect(buttons.find((b) => b.text === "Full error ↗")).toBeUndefined();
+    expect(buttons.find((b) => b.text === "View Run ↗")).toBeUndefined();
+  });
 });
 
 describe("formatAgentRunStarted", () => {
