@@ -1,3 +1,4 @@
+import { emitOrLog } from "./events.js";
 import type { PluginContext, AgentSessionEvent } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { truncateAtWord } from "./telegram-api.js";
@@ -343,14 +344,13 @@ async function handleAcpSpawn(
   await saveSessions(ctx, chatId, messageThreadId, sessions);
 
   if (transport === "acp") {
-    // Emit ACP spawn event - companyId is SECOND arg
-    ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "spawn",
       sessionId,
       agentName: trimmedName,
       chatId,
       threadId: messageThreadId,
-    });
+    }, "session spawn", { sessionId, chatId, threadId: messageThreadId });
   }
 
   const agentCount = activeSessions.length + 1;
@@ -469,12 +469,12 @@ async function handleAcpCancel(
       ctx.logger.error("Failed to close native session", { error: String(err) });
     }
   } else {
-    ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "cancel",
       sessionId: target.sessionId,
       chatId,
       threadId: messageThreadId,
-    });
+    }, "session cancel", { sessionId: target.sessionId, chatId, threadId: messageThreadId });
   }
 
   await sendMessage(
@@ -554,12 +554,12 @@ async function handleAcpClose(
       ctx.logger.error("Failed to close native session", { error: String(err) });
     }
   } else {
-    ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "close",
       sessionId: targetSession.sessionId,
       chatId,
       threadId: messageThreadId,
-    });
+    }, "session close", { sessionId: targetSession.sessionId, chatId, threadId: messageThreadId });
   }
 
   // Mark closed
@@ -672,14 +672,13 @@ export async function routeMessageToAgent(
       return false;
     }
   } else {
-    // ACP transport - emit event, companyId is SECOND arg
-    ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
       type: "message",
       sessionId: targetSession.sessionId,
       chatId,
       threadId,
       text,
-    });
+    }, "routed message", { sessionId: targetSession.sessionId, chatId, threadId });
   }
 
   ctx.logger.info("Routed message to agent session", {
@@ -1111,13 +1110,13 @@ async function executeHandoff(
     await saveSessions(ctx, chatId, threadId, sessions);
 
     if (transport === "acp") {
-      ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+      await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
         type: "spawn",
         sessionId,
         agentName: targetAgent,
         chatId,
         threadId,
-      });
+      }, "handoff target auto-spawn", { sessionId, chatId, threadId });
     }
 
     await sendMessage(
@@ -1139,13 +1138,13 @@ async function executeHandoff(
       "handoff",
     );
   } else {
-    ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
       type: "message",
       sessionId: targetSession.sessionId,
       chatId,
       threadId,
       text: `[Handoff context] ${contextSummary}`,
-    });
+    }, "handoff context", { sessionId: targetSession.sessionId, chatId, threadId });
   }
 }
 
@@ -1222,13 +1221,13 @@ export async function handleDiscussToolCall(
     await saveSessions(ctx, chatId, threadId, sessions);
 
     if (transport === "acp") {
-      ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+      await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
         type: "spawn",
         sessionId,
         agentName: targetAgent,
         chatId,
         threadId,
-      });
+      }, "discussion target auto-spawn", { sessionId, chatId, threadId });
     }
 
     await sendMessage(
@@ -1289,13 +1288,13 @@ export async function handleDiscussToolCall(
       "discussion",
     );
   } else {
-    ctx.events.emit(ACP_SPAWN_EVENT, companyId, {
+    await emitOrLog(ctx, ACP_SPAWN_EVENT, companyId, {
       type: "message",
       sessionId: targetSession.sessionId,
       chatId,
       threadId,
       text: `[Discussion: ${topic}] ${initialMessage}`,
-    });
+    }, "discussion start", { sessionId: targetSession.sessionId, chatId, threadId });
   }
 
   return { content: JSON.stringify({ status: "started", loopId, maxTurns }) };
@@ -1420,13 +1419,13 @@ async function checkConversationLoopContinuation(
           "discussion_turn",
         );
       } else {
-        ctx.events.emit(ACP_SPAWN_EVENT, resolvedCompanyId, {
+        await emitOrLog(ctx, ACP_SPAWN_EVENT, resolvedCompanyId, {
           type: "message",
           sessionId: nextSessionId,
           chatId,
           threadId,
           text: `[Discussion: ${loop.topic}] ${text}`,
-        });
+        }, "discussion turn", { sessionId: nextSessionId, chatId, threadId });
       }
     }
   }

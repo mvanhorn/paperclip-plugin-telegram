@@ -1,3 +1,4 @@
+import { emitOrLog } from "./events.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
@@ -144,13 +145,13 @@ export async function handleMediaMessage(
           projectId,
         );
       } else {
-        ctx.events.emit("acp-spawn", companyId, {
+        await emitOrLog(ctx, "acp-spawn", companyId, {
           type: "message",
           sessionId: target.sessionId,
           chatId,
           threadId,
           text: prompt,
-        });
+        }, "media message", { sessionId: target.sessionId, chatId, threadId });
       }
     }
   }
