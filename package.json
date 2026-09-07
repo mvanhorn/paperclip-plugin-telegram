@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-telegram",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "main": "./dist/index.js",
   "paperclipPlugin": {
@@ -37,5 +37,9 @@
     "type": "git",
     "url": "git+https://github.com/mvanhorn/paperclip-plugin-telegram.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "overrides": {
+    "esbuild": "0.28.1",
+    "nanoid": "3.3.18"
+  }
 }
