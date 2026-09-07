@@ -1,3 +1,4 @@
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type { PluginContext, PluginEvent, Agent, Issue, Project } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
@@ -105,6 +106,7 @@ export async function handleCommand(
   companyId?: string,
   boardApiToken?: string,
   maxAgentsPerThread?: number,
+  connectCompanyIds?: readonly string[],
 ): Promise<void> {
   await ctx.metrics.write(METRIC_NAMES.commandsHandled, 1);
 
@@ -134,7 +136,7 @@ export async function handleCommand(
       await handleHelp(ctx, token, chatId, messageThreadId);
       break;
     case "connect":
-      await handleConnect(ctx, token, chatId, args, messageThreadId);
+      await handleConnect(ctx, token, chatId, args, messageThreadId, connectCompanyIds);
       break;
     case "connect_topic":
       await handleConnectTopic(ctx, token, chatId, args, messageThreadId);
@@ -392,27 +394,46 @@ async function handleHelp(
   });
 }
 
+// Background commands cannot discover companies with an unscoped list call:
+// it races with live host invocations. IDs come from verified config deliveries;
+// re-reading each explicit company lets the host enforce current authorization.
+async function connectCompanies(ctx: PluginContext, companyIds?: readonly string[]) {
+  if (companyIds === undefined) return ctx.companies.list();
+  const companies = await Promise.all(companyIds.map(async (id) => {
+    try {
+      return await ctx.companies.get(id);
+    } catch (err) {
+      // Revoked scopes are unavailable, but a timeout or host failure must
+      // remain an error instead of masquerading as a missing company.
+      if (err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED) return null;
+      throw err;
+    }
+  }));
+  return companies.filter((company) => company !== null);
+}
+
 async function handleConnect(
   ctx: PluginContext,
   token: string,
   chatId: string,
   companyArg: string,
   messageThreadId?: number,
+  connectCompanyIds?: readonly string[],
 ): Promise<void> {
   if (!companyArg.trim()) {
     try {
-      const companies = await ctx.companies.list();
+      const companies = await connectCompanies(ctx, connectCompanyIds);
       const names = companies.map((c) => c.name || c.id).join(", ");
       await sendMessage(ctx, token, chatId, `Usage: /connect <company-name>\nAvailable: ${names || "none"}`, { messageThreadId });
     } catch {
-      await sendMessage(ctx, token, chatId, "Usage: /connect <company-name>", { messageThreadId });
+      await sendMessage(ctx, token, chatId, "Usage: /connect <company-name>\nCould not load available companies. Please try again.", { messageThreadId });
     }
     return;
   }
 
   try {
     const input = companyArg.trim();
-    const companies = await ctx.companies.list();
+    const companies = await connectCompanies(ctx, connectCompanyIds);
     const match = companies.find(
       (c) =>
         c.id === input ||

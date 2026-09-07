@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   definePlugin,
   runWorker,
@@ -136,6 +137,10 @@ type TelegramUpdate = {
     data?: string;
   };
 };
+
+// Module initialization runs before the SDK enters any host invocation.
+const runOutsideInvocation = AsyncLocalStorage.snapshot();
+const deliveredCompanyIds = new Set<string>();
 
 const TELEGRAM_API = "https://api.telegram.org";
 const BOARD_ACCESS_SCOPE = {
@@ -632,7 +637,9 @@ async function bootstrapRuntime(
 
   if (!pollingActive) {
     pollingActive = true;
-    pollUpdates(ctx).catch((err) =>
+    // Capture at module load, not here: this callback belongs to a short-lived
+    // host invocation. The polling descendants must make proactive RPC calls.
+    runOutsideInvocation(() => pollUpdates(ctx)).catch((err) =>
       ctx.logger.error("Polling loop crashed", { error: String(err) }),
     );
   }
@@ -678,7 +685,7 @@ async function pollUpdates(ctx: PluginContext): Promise<void> {
         lastUpdateId = await processTelegramUpdateBatch({
           updates: data.result,
           lastUpdateId,
-          handleUpdate: (update) => handleUpdate(ctx, rt.token, rt.config, update, rt.baseUrl, rt.publicUrl),
+          handleUpdate: (update) => handleUpdate(ctx, rt.token, rt.config, update, rt.baseUrl, rt.publicUrl, undefined, [...deliveredCompanyIds]),
           persistOffset: (updateId) => persistTelegramUpdateOffset(ctx, updateId),
           logger: ctx.logger,
         });
@@ -1398,6 +1405,9 @@ export const plugin = definePlugin({
         return;
       }
 
+      // Discovery comes only from verified host deliveries. Keep routing for
+      // other companies even when they do not own the shared bot config.
+      deliveredCompanyIds.add(companyId);
       try {
         await bootstrapRuntime(ctx, companyId, newConfig);
       } catch (err) {
@@ -1437,6 +1447,7 @@ export async function handleUpdate(
   baseUrl: string,
   publicUrl?: string,
   boardApiToken?: string,
+  connectCompanyIds?: readonly string[],
 ): Promise<void> {
   if (!isTelegramUpdateAllowed(config, update)) {
     const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
@@ -1518,7 +1529,7 @@ export async function handleUpdate(
 
     // Built-in commands
     const boardApiToken = command === "approve" ? await resolveBoardApiToken(ctx, config, companyId) : undefined;
-    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken, config.maxAgentsPerThread);
+    await handleCommand(ctx, token, chatId, command, args, threadId, baseUrl, publicUrl, companyId, boardApiToken, config.maxAgentsPerThread, connectCompanyIds);
     return;
   }
 
