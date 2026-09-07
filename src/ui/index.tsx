@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  StatusBadge,
   usePluginAction,
   usePluginData,
   type PluginSettingsPageProps,
@@ -183,7 +184,7 @@ const DEFAULT_PROACTIVE_CONFIG: TelegramProactiveConfig = {
 };
 
 const standardInputStyle = {
-  border: "1px solid #d1d5db",
+  border: "1px solid var(--border)",
   borderRadius: 8,
   fontSize: 14,
   minWidth: 0,
@@ -191,7 +192,7 @@ const standardInputStyle = {
 };
 
 const helperTextStyle = {
-  color: "#6b7280",
+  color: "var(--muted-foreground)",
   fontSize: 12,
   lineHeight: "16px",
 };
@@ -1203,10 +1204,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
   }
 
   return (
-    <main style={{ display: "grid", gap: 24, padding: 24, color: "#111827" }}>
+    <main style={{ display: "grid", gap: 24, padding: 24, color: "var(--foreground)" }}>
       <section style={{ display: "grid", gap: 8 }}>
         <h1 style={{ fontSize: 24, lineHeight: "32px", margin: 0 }}>Telegram Bot</h1>
-        <p style={{ color: "#6b7280", margin: 0, maxWidth: 760 }}>
+        <p style={{ color: "var(--muted-foreground)", margin: 0, maxWidth: 760 }}>
           Configure Telegram connection, access control, notification routing, media intake, escalation, and proactive suggestion behavior.
         </p>
       </section>
@@ -1214,10 +1215,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       {notice ? (
         <div
           style={{
-            border: `1px solid ${notice.tone === "success" ? "#99f6e4" : "#fecaca"}`,
+            border: `1px solid ${notice.tone === "success" ? "var(--border)" : "var(--destructive)"}`,
             borderRadius: 8,
-            background: notice.tone === "success" ? "#f0fdfa" : "#fef2f2",
-            color: notice.tone === "success" ? "#115e59" : "#991b1b",
+            background: notice.tone === "success" ? "var(--accent)" : "color-mix(in oklab, var(--destructive) 12%, var(--background))",
+            color: notice.tone === "success" ? "var(--accent-foreground)" : "var(--destructive)",
             padding: 14,
           }}
         >
@@ -1228,7 +1229,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           display: "grid",
           gap: 18,
@@ -1237,7 +1238,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       >
         <div style={{ display: "grid", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Connection & URLs</h2>
-          <p style={{ color: "#6b7280", margin: 0 }}>
+          <p style={{ color: "var(--muted-foreground)", margin: 0 }}>
             Core connection values used by the Telegram worker. Select company secrets for sensitive values; secret values are never shown here.
           </p>
         </div>
@@ -1283,10 +1284,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               setConnectionMessage(null);
             }}
             style={{
-              background: "white",
-              border: "1px solid #d1d5db",
+              background: "var(--background)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
-              color: "#374151",
+              color: "var(--foreground)",
               cursor: connectionLoading || connectionSaving ? "not-allowed" : "pointer",
               fontWeight: 700,
               padding: "10px 14px",
@@ -1301,10 +1302,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               void handleSaveConnectionConfig();
             }}
             style={{
-              background: connectionLoading || connectionSaving || !connectionDirty ? "#9ca3af" : "#111827",
+              background: connectionLoading || connectionSaving || !connectionDirty ? "var(--muted)" : "var(--primary)",
               border: 0,
               borderRadius: 8,
-              color: "white",
+              color: "var(--primary-foreground)",
               cursor: connectionLoading || connectionSaving || !connectionDirty ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
@@ -1319,7 +1320,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           display: "grid",
           gap: 18,
@@ -1329,30 +1330,21 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
         <div style={{ alignItems: "start", display: "flex", gap: 16, justifyContent: "space-between" }}>
           <div style={{ display: "grid", gap: 4 }}>
             <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Board Access Connection</h2>
-            <p style={{ color: "#6b7280", margin: 0 }}>
+            <p style={{ color: "var(--muted-foreground)", margin: 0 }}>
               Telegram approval buttons need board access when Paperclip requires authenticated approval mutations.
             </p>
           </div>
-          <span
-            style={{
-              background: configured ? "#ccfbf1" : "#f3f4f6",
-              borderRadius: 999,
-              color: configured ? "#0f766e" : "#4b5563",
-              fontSize: 12,
-              fontWeight: 700,
-              padding: "5px 10px",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {connecting ? "Connecting" : configured ? "Connected" : "Not connected"}
-          </span>
+          <StatusBadge
+            status={connecting ? "pending" : configured ? "ok" : "info"}
+            label={connecting ? "Connecting" : configured ? "Connected" : "Not connected"}
+          />
         </div>
 
         <div
           style={{
             alignItems: "center",
-            background: "#f9fafb",
-            border: "1px solid #e5e7eb",
+            background: "var(--muted)",
+            border: "1px solid var(--border)",
             borderRadius: 8,
             display: "flex",
             gap: 16,
@@ -1370,7 +1362,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                     : `Connected for ${companyLabel}`
                   : `Connect board access for ${companyLabel}`}
             </strong>
-            <span style={{ color: "#6b7280" }}>
+            <span style={{ color: "var(--muted-foreground)" }}>
               {configured
                 ? "The board token is stored as a Paperclip secret; the plugin keeps only the secret reference."
                 : "This opens a Paperclip approval page, then saves the resulting board token as a company secret."}
@@ -1382,10 +1374,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               void handleConnectBoardAccess();
             }}
             style={{
-              background: !companyId || connecting || boardAccess.loading ? "#9ca3af" : "#111827",
+              background: !companyId || connecting || boardAccess.loading ? "var(--muted)" : "var(--primary)",
               border: 0,
               borderRadius: 8,
-              color: "white",
+              color: "var(--primary-foreground)",
               cursor: !companyId || connecting || boardAccess.loading ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 190,
@@ -1397,7 +1389,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
           </button>
         </div>
 
-        <div style={{ borderTop: "1px solid #e5e7eb", display: "grid", gap: 12, paddingTop: 14 }}>
+        <div style={{ borderTop: "1px solid var(--border)", display: "grid", gap: 12, paddingTop: 14 }}>
           <SecretRefField
             companyId={companyId}
             disabled={boardConfigLoading || boardConfigSaving}
@@ -1419,10 +1411,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                 setBoardConfigMessage(null);
               }}
               style={{
-                background: "white",
-                border: "1px solid #d1d5db",
+                background: "var(--background)",
+                border: "1px solid var(--border)",
                 borderRadius: 8,
-                color: "#374151",
+                color: "var(--foreground)",
                 cursor: boardConfigLoading || boardConfigSaving ? "not-allowed" : "pointer",
                 fontWeight: 700,
                 padding: "10px 14px",
@@ -1437,10 +1429,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                 void handleSaveBoardConfig();
               }}
               style={{
-                background: boardConfigLoading || boardConfigSaving || !boardConfigDirty ? "#9ca3af" : "#111827",
+                background: boardConfigLoading || boardConfigSaving || !boardConfigDirty ? "var(--muted)" : "var(--primary)",
                 border: 0,
                 borderRadius: 8,
-                color: "white",
+                color: "var(--primary-foreground)",
                 cursor: boardConfigLoading || boardConfigSaving || !boardConfigDirty ? "not-allowed" : "pointer",
                 fontWeight: 700,
                 minWidth: 160,
@@ -1454,7 +1446,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
         </div>
 
         {boardAccess.error ? (
-          <p style={{ color: "#991b1b", margin: 0 }}>
+          <p style={{ color: "var(--destructive)", margin: 0 }}>
             Could not read board access state: {boardAccess.error.message}
           </p>
         ) : null}
@@ -1462,7 +1454,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           display: "grid",
           gap: 18,
@@ -1471,7 +1463,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       >
         <div style={{ display: "grid", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Bot Interaction & Access Control</h2>
-          <p style={{ color: "#6b7280", margin: 0 }}>
+          <p style={{ color: "var(--muted-foreground)", margin: 0 }}>
             Controls who can use the bot interactively. Empty allowlists are permissive; set both user and chat IDs for strict private-group access.
           </p>
         </div>
@@ -1527,10 +1519,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               setAccessMessage(null);
             }}
             style={{
-              background: "white",
-              border: "1px solid #d1d5db",
+              background: "var(--background)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
-              color: "#374151",
+              color: "var(--foreground)",
               cursor: accessLoading || accessSaving ? "not-allowed" : "pointer",
               fontWeight: 700,
               padding: "10px 14px",
@@ -1545,10 +1537,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               void handleSaveAccessConfig();
             }}
             style={{
-              background: accessLoading || accessSaving || !accessDirty ? "#9ca3af" : "#111827",
+              background: accessLoading || accessSaving || !accessDirty ? "var(--muted)" : "var(--primary)",
               border: 0,
               borderRadius: 8,
-              color: "white",
+              color: "var(--primary-foreground)",
               cursor: accessLoading || accessSaving || !accessDirty ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
@@ -1563,7 +1555,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           display: "grid",
           gap: 18,
@@ -1572,7 +1564,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       >
         <div style={{ display: "grid", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Notification Routing & Forum Topics</h2>
-          <p style={{ color: "#6b7280", margin: 0 }}>
+          <p style={{ color: "var(--muted-foreground)", margin: 0 }}>
             Grouped operational destinations. Empty Chat IDs fall back to the default route; Topic IDs are optional and only apply inside the matching Telegram forum group.
           </p>
         </div>
@@ -1580,7 +1572,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
         <div style={{ display: "grid", gap: 12 }}>
           <section
             style={{
-              border: "1px solid #e5e7eb",
+              border: "1px solid var(--border)",
               borderRadius: 8,
               display: "grid",
               gap: 10,
@@ -1589,13 +1581,13 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
           >
             <strong>Default route</strong>
             <label style={{ display: "grid", gap: 5 }}>
-              <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Fallback Chat ID</span>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Fallback Chat ID</span>
               <input
                 disabled={routingLoading || routingSaving}
                 onChange={(event) => updateRoutingField("defaultChatId", event.currentTarget.value)}
                 placeholder="Default chat ID"
                 style={{
-                  border: "1px solid #d1d5db",
+                  border: "1px solid var(--border)",
                   borderRadius: 8,
                   fontSize: 14,
                   minWidth: 0,
@@ -1604,11 +1596,11 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                 type="text"
                 value={routingConfig.defaultChatId}
               />
-              <span style={{ color: "#6b7280", fontSize: 12 }}>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>
                 Used when a notification type leaves its Chat ID empty and no company-specific chat is connected.
               </span>
             </label>
-            <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+            <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
               <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                 <input
                   checked={routingConfig.topicRouting}
@@ -1618,19 +1610,19 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                 />
                 Forum topic routing
               </span>
-              <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                 Route project-linked notifications to Telegram forum topics mapped with /connect_topic.
               </span>
             </label>
             <label style={{ display: "grid", gap: 5 }}>
-              <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Max agents per forum topic</span>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Max agents per forum topic</span>
               <input
                 disabled={routingLoading || routingSaving}
                 min={1}
                 onChange={(event) => updateRoutingField("maxAgentsPerThread", Number(event.currentTarget.value))}
                 placeholder="3"
                 style={{
-                  border: "1px solid #d1d5db",
+                  border: "1px solid var(--border)",
                   borderRadius: 8,
                   fontSize: 14,
                   maxWidth: 180,
@@ -1640,7 +1632,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                 type="number"
                 value={routingConfig.maxAgentsPerThread}
               />
-              <span style={{ color: "#6b7280", fontSize: 12 }}>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>
                 Maximum concurrent agent sessions allowed inside one Telegram forum topic. This applies to /acp agent sessions, not notification delivery.
               </span>
             </label>
@@ -1648,7 +1640,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
           <section
             style={{
-              border: "1px solid #e5e7eb",
+              border: "1px solid var(--border)",
               borderRadius: 8,
               display: "grid",
               gap: 10,
@@ -1657,7 +1649,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
           >
             <strong>Issues</strong>
             <div style={{ display: "grid", gap: 10 }}>
-              <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+              <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                 <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                   <input
                     checked={routingConfig.notifyOnIssueCreated}
@@ -1667,11 +1659,11 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                   />
                   Created
                 </span>
-                <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                   Send a Telegram notification when a new issue is created.
                 </span>
               </label>
-              <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+              <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                 <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                   <input
                     checked={routingConfig.notifyOnIssueDone}
@@ -1681,11 +1673,11 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                   />
                   Completed
                 </span>
-                <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                   Send a Telegram notification when an issue is completed.
                 </span>
               </label>
-              <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+              <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                 <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                   <input
                     checked={routingConfig.notifyOnIssueAssigned}
@@ -1695,19 +1687,19 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                   />
                   Assignment changes
                 </span>
-                <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                   Send a Telegram notification when an issue assignee changes.
                 </span>
               </label>
             </div>
             <label style={{ display: "grid", gap: 5 }}>
-              <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Only when assigned to user ID</span>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Only when assigned to user ID</span>
               <input
                 disabled={routingLoading || routingSaving}
                 onChange={(event) => updateRoutingField("onlyNotifyIfAssignedTo", event.currentTarget.value)}
                 placeholder="Paperclip user ID"
                 style={{
-                  border: "1px solid #d1d5db",
+                  border: "1px solid var(--border)",
                   borderRadius: 8,
                   fontSize: 14,
                   minWidth: 0,
@@ -1716,7 +1708,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                 type="text"
                 value={routingConfig.onlyNotifyIfAssignedTo}
               />
-              <span style={{ color: "#6b7280", fontSize: 12 }}>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>
                 Optional. Restricts assignment-change notifications to issues assigned to this Paperclip user.
               </span>
             </label>
@@ -1734,7 +1726,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             chatHelp="Leave empty to use the default route for approval notifications."
             footer={
               <>
-                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                   <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                     <input
                       checked={routingConfig.notifyOnApprovalCreated}
@@ -1744,11 +1736,11 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                     />
                     Enabled
                   </span>
-                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                  <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                     Send Telegram notifications when approval requests are created.
                   </span>
                 </label>
-                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                   <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                     <input
                       checked={routingConfig.onlyNotifyBoardApprovals}
@@ -1758,7 +1750,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                     />
                     Board requests only
                   </span>
-                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                  <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                     Ignore internal approvals and notify only when an agent requests Board approval.
                   </span>
                 </label>
@@ -1778,7 +1770,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             chatHelp="Leave empty to use the default route for agent error notifications."
             footer={
               <>
-                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                   <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                     <input
                       checked={routingConfig.notifyOnAgentError}
@@ -1788,11 +1780,11 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                     />
                     Errors enabled
                   </span>
-                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                  <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                     Send Telegram notifications when an agent run reports an error.
                   </span>
                 </label>
-                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                   <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                     <input
                       checked={routingConfig.notifyOnAgentRunStarted}
@@ -1802,11 +1794,11 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                     />
                     Run started
                   </span>
-                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                  <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                     Notify on every agent run start. Off by default - high-frequency on busy instances. Routes through the default chat.
                   </span>
                 </label>
-                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
                   <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
                     <input
                       checked={routingConfig.notifyOnAgentRunFinished}
@@ -1816,7 +1808,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                     />
                     Run finished
                   </span>
-                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                  <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>
                     Notify on every agent run completion. Off by default - high-frequency on busy instances. Routes through the default chat.
                   </span>
                 </label>
@@ -1837,12 +1829,12 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             footer={
               <div style={{ display: "grid", gap: 10 }}>
                 <label style={{ display: "grid", gap: 6 }}>
-                  <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Mode</span>
+                  <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Mode</span>
                   <select
                     disabled={routingLoading || routingSaving}
                     onChange={(event) => updateRoutingField("digestMode", event.currentTarget.value as TelegramRoutingConfig["digestMode"])}
                     style={{
-                      border: "1px solid #d1d5db",
+                      border: "1px solid var(--border)",
                       borderRadius: 8,
                       fontSize: 14,
                       maxWidth: 280,
@@ -1855,19 +1847,19 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                     <option value="bidaily">Bidaily</option>
                     <option value="tridaily">Tridaily</option>
                   </select>
-                  <span style={{ color: "#6b7280", fontSize: 12 }}>
+                  <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>
                     Off disables digest notifications. Times are UTC.
                   </span>
                 </label>
                 <div style={{ alignItems: "stretch", display: "grid", gap: 10, gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
                   <label style={{ display: "grid", gap: 5, gridTemplateRows: "auto auto minmax(32px, auto)" }}>
-                    <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Daily time</span>
+                    <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Daily time</span>
                     <input
                       disabled={routingLoading || routingSaving}
                       onChange={(event) => updateRoutingField("dailyDigestTime", event.currentTarget.value)}
                       placeholder="09:00"
                       style={{
-                        border: "1px solid #d1d5db",
+                        border: "1px solid var(--border)",
                         borderRadius: 8,
                         fontSize: 14,
                         minWidth: 0,
@@ -1876,18 +1868,18 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                       type="text"
                       value={routingConfig.dailyDigestTime}
                     />
-                    <span style={{ color: "#6b7280", fontSize: 12, lineHeight: "16px" }}>
+                    <span style={{ color: "var(--muted-foreground)", fontSize: 12, lineHeight: "16px" }}>
                       Used for daily mode and as the first bidaily slot.
                     </span>
                   </label>
                   <label style={{ display: "grid", gap: 5, gridTemplateRows: "auto auto minmax(32px, auto)" }}>
-                    <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Bidaily second time</span>
+                    <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Bidaily second time</span>
                     <input
                       disabled={routingLoading || routingSaving}
                       onChange={(event) => updateRoutingField("bidailySecondTime", event.currentTarget.value)}
                       placeholder="17:00"
                       style={{
-                        border: "1px solid #d1d5db",
+                        border: "1px solid var(--border)",
                         borderRadius: 8,
                         fontSize: 14,
                         minWidth: 0,
@@ -1896,18 +1888,18 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                       type="text"
                       value={routingConfig.bidailySecondTime}
                     />
-                    <span style={{ color: "#6b7280", fontSize: 12, lineHeight: "16px" }}>
+                    <span style={{ color: "var(--muted-foreground)", fontSize: 12, lineHeight: "16px" }}>
                       Second send time when bidaily mode is selected.
                     </span>
                   </label>
                   <label style={{ display: "grid", gap: 5, gridTemplateRows: "auto auto minmax(32px, auto)" }}>
-                    <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Tridaily times</span>
+                    <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Tridaily times</span>
                     <input
                       disabled={routingLoading || routingSaving}
                       onChange={(event) => updateRoutingField("tridailyTimes", event.currentTarget.value)}
                       placeholder="07:00,13:00,19:00"
                       style={{
-                        border: "1px solid #d1d5db",
+                        border: "1px solid var(--border)",
                         borderRadius: 8,
                         fontSize: 14,
                         minWidth: 0,
@@ -1916,7 +1908,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                       type="text"
                       value={routingConfig.tridailyTimes}
                     />
-                    <span style={{ color: "#6b7280", fontSize: 12, lineHeight: "16px" }}>
+                    <span style={{ color: "var(--muted-foreground)", fontSize: 12, lineHeight: "16px" }}>
                       Three comma-separated UTC times for tridaily mode.
                     </span>
                   </label>
@@ -1936,10 +1928,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               setRoutingMessage(null);
             }}
             style={{
-              background: "white",
-              border: "1px solid #d1d5db",
+              background: "var(--background)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
-              color: "#374151",
+              color: "var(--foreground)",
               cursor: routingLoading || routingSaving ? "not-allowed" : "pointer",
               fontWeight: 700,
               padding: "10px 14px",
@@ -1954,10 +1946,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               void handleSaveRoutingConfig();
             }}
             style={{
-              background: routingLoading || routingSaving || !routingDirty ? "#9ca3af" : "#111827",
+              background: routingLoading || routingSaving || !routingDirty ? "var(--muted)" : "var(--primary)",
               border: 0,
               borderRadius: 8,
-              color: "white",
+              color: "var(--primary-foreground)",
               cursor: routingLoading || routingSaving || !routingDirty ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
@@ -1972,7 +1964,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           display: "grid",
           gap: 18,
@@ -1981,7 +1973,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       >
         <div style={{ display: "grid", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Media Intake / Brief Agent</h2>
-          <p style={{ color: "#6b7280", margin: 0 }}>
+          <p style={{ color: "var(--muted-foreground)", margin: 0 }}>
             Routes Telegram voice, audio, documents, and photos either to a Brief Agent intake flow or to active agent sessions inside forum topics.
           </p>
         </div>
@@ -2029,10 +2021,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               setMediaMessage(null);
             }}
             style={{
-              background: "white",
-              border: "1px solid #d1d5db",
+              background: "var(--background)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
-              color: "#374151",
+              color: "var(--foreground)",
               cursor: mediaLoading || mediaSaving ? "not-allowed" : "pointer",
               fontWeight: 700,
               padding: "10px 14px",
@@ -2047,10 +2039,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               void handleSaveMediaConfig();
             }}
             style={{
-              background: mediaLoading || mediaSaving || !mediaDirty ? "#9ca3af" : "#111827",
+              background: mediaLoading || mediaSaving || !mediaDirty ? "var(--muted)" : "var(--primary)",
               border: 0,
               borderRadius: 8,
-              color: "white",
+              color: "var(--primary-foreground)",
               cursor: mediaLoading || mediaSaving || !mediaDirty ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
@@ -2065,7 +2057,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           display: "grid",
           gap: 18,
@@ -2074,7 +2066,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       >
         <div style={{ display: "grid", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Human Escalation</h2>
-          <p style={{ color: "#6b7280", margin: 0 }}>
+          <p style={{ color: "var(--muted-foreground)", margin: 0 }}>
             Controls where human handoff requests go and what the bot tells the original Telegram user while waiting.
           </p>
         </div>
@@ -2091,7 +2083,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
           </TextField>
           <div style={twoColumnGridStyle}>
             <label style={pairedFieldStyle}>
-              <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Escalation timeout (ms)</span>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Escalation timeout (ms)</span>
               <input
                 disabled={escalationLoading || escalationSaving}
                 min={0}
@@ -2106,7 +2098,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               </span>
             </label>
             <label style={pairedFieldStyle}>
-              <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Default action on timeout</span>
+              <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Default action on timeout</span>
               <select
                 disabled={escalationLoading || escalationSaving}
                 onChange={(event) => updateEscalationField("escalationDefaultAction", event.currentTarget.value as TelegramEscalationConfig["escalationDefaultAction"])}
@@ -2144,10 +2136,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               setEscalationMessage(null);
             }}
             style={{
-              background: "white",
-              border: "1px solid #d1d5db",
+              background: "var(--background)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
-              color: "#374151",
+              color: "var(--foreground)",
               cursor: escalationLoading || escalationSaving ? "not-allowed" : "pointer",
               fontWeight: 700,
               padding: "10px 14px",
@@ -2162,10 +2154,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               void handleSaveEscalationConfig();
             }}
             style={{
-              background: escalationLoading || escalationSaving || !escalationDirty ? "#9ca3af" : "#111827",
+              background: escalationLoading || escalationSaving || !escalationDirty ? "var(--muted)" : "var(--primary)",
               border: 0,
               borderRadius: 8,
-              color: "white",
+              color: "var(--primary-foreground)",
               cursor: escalationLoading || escalationSaving || !escalationDirty ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
@@ -2180,7 +2172,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           display: "grid",
           gap: 18,
@@ -2189,14 +2181,14 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       >
         <div style={{ display: "grid", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: "28px", margin: 0 }}>Proactive Suggestions</h2>
-          <p style={{ color: "#6b7280", margin: 0 }}>
+          <p style={{ color: "var(--muted-foreground)", margin: 0 }}>
             Controls the scheduled watch system that sends Telegram suggestions when registered watches match Paperclip activity.
           </p>
         </div>
 
         <div style={twoColumnGridStyle}>
           <label style={pairedFieldStyle}>
-            <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Suggestion rate limit</span>
+            <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Suggestion rate limit</span>
             <input
               disabled={proactiveLoading || proactiveSaving}
               min={0}
@@ -2211,7 +2203,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             </span>
           </label>
           <label style={pairedFieldStyle}>
-            <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Watch deduplication window (ms)</span>
+            <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Watch deduplication window (ms)</span>
             <input
               disabled={proactiveLoading || proactiveSaving}
               min={0}
@@ -2229,17 +2221,17 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
 
         <div
           style={{
-            background: "#f9fafb",
-            border: "1px solid #e5e7eb",
+            background: "var(--muted)",
+            border: "1px solid var(--border)",
             borderRadius: 8,
-            color: "#4b5563",
+            color: "var(--muted-foreground)",
             display: "grid",
             fontSize: 13,
             gap: 4,
             padding: 12,
           }}
         >
-          <strong style={{ color: "#374151" }}>Watch controls</strong>
+          <strong style={{ color: "var(--foreground)" }}>Watch controls</strong>
           <span>
             Individual watches are created by agents through the `register_watch` tool and stored per company. This section controls global rate limiting and duplicate suppression; it does not create or delete watch definitions.
           </span>
@@ -2255,10 +2247,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               setProactiveMessage(null);
             }}
             style={{
-              background: "white",
-              border: "1px solid #d1d5db",
+              background: "var(--background)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
-              color: "#374151",
+              color: "var(--foreground)",
               cursor: proactiveLoading || proactiveSaving ? "not-allowed" : "pointer",
               fontWeight: 700,
               padding: "10px 14px",
@@ -2273,10 +2265,10 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               void handleSaveProactiveConfig();
             }}
             style={{
-              background: proactiveLoading || proactiveSaving || !proactiveDirty ? "#9ca3af" : "#111827",
+              background: proactiveLoading || proactiveSaving || !proactiveDirty ? "var(--muted)" : "var(--primary)",
               border: 0,
               borderRadius: 8,
-              color: "white",
+              color: "var(--primary-foreground)",
               cursor: proactiveLoading || proactiveSaving || !proactiveDirty ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
@@ -2296,10 +2288,10 @@ function NoticeBlock({ notice }: { notice: Notice }): React.JSX.Element {
   return (
     <div
       style={{
-        border: `1px solid ${notice.tone === "success" ? "#99f6e4" : "#fecaca"}`,
+        border: `1px solid ${notice.tone === "success" ? "var(--border)" : "var(--destructive)"}`,
         borderRadius: 8,
-        background: notice.tone === "success" ? "#f0fdfa" : "#fef2f2",
-        color: notice.tone === "success" ? "#115e59" : "#991b1b",
+        background: notice.tone === "success" ? "var(--accent)" : "color-mix(in oklab, var(--destructive) 12%, var(--background))",
+        color: notice.tone === "success" ? "var(--accent-foreground)" : "var(--destructive)",
         padding: 12,
       }}
     >
@@ -2368,7 +2360,7 @@ function SecretRefField({
 
   return (
     <label style={{ display: "grid", gap: 5 }}>
-      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>{label}</span>
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>{label}</span>
       <select
         disabled={fieldDisabled}
         onChange={(event) => onChange(event.currentTarget.value)}
@@ -2400,8 +2392,8 @@ function SecretRefField({
         type="text"
         value={value}
       />
-      <span style={{ color: "#6b7280", fontSize: 12 }}>{children}</span>
-      {error ? <span style={{ color: "#b91c1c", fontSize: 12 }}>Could not load company secrets: {error}</span> : null}
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>{children}</span>
+      {error ? <span style={{ color: "var(--destructive)", fontSize: 12 }}>Could not load company secrets: {error}</span> : null}
     </label>
   );
 }
@@ -2423,13 +2415,13 @@ function TextField({
 }): React.JSX.Element {
   return (
     <label style={{ display: "grid", gap: 5 }}>
-      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>{label}</span>
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>{label}</span>
       <input
         disabled={disabled}
         onChange={(event) => onChange(event.currentTarget.value)}
         placeholder={placeholder}
         style={{
-          border: "1px solid #d1d5db",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           fontSize: 14,
           minWidth: 0,
@@ -2438,7 +2430,7 @@ function TextField({
         type="text"
         value={value}
       />
-      <span style={{ color: "#6b7280", fontSize: 12 }}>{children}</span>
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>{children}</span>
     </label>
   );
 }
@@ -2462,14 +2454,14 @@ function TextAreaField({
 }): React.JSX.Element {
   return (
     <label style={{ display: "grid", gap: 5 }}>
-      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>{label}</span>
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>{label}</span>
       <textarea
         disabled={disabled}
         onChange={(event) => onChange(event.currentTarget.value)}
         placeholder={placeholder}
         rows={rows}
         style={{
-          border: "1px solid #d1d5db",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           fontSize: 14,
           minWidth: 0,
@@ -2478,7 +2470,7 @@ function TextAreaField({
         }}
         value={value}
       />
-      <span style={{ color: "#6b7280", fontSize: 12 }}>{children}</span>
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>{children}</span>
     </label>
   );
 }
@@ -2518,14 +2510,14 @@ function ArrayField({
 
   return (
     <div style={{ display: "grid", gap: 7 }}>
-      <div style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>{label}</div>
+      <div style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>{label}</div>
       <div style={{ display: "grid", gap: 8 }}>
         {value.length === 0 ? (
           <div
             style={{
-              border: "1px dashed #d1d5db",
+              border: "1px dashed var(--border)",
               borderRadius: 8,
-              color: "#6b7280",
+              color: "var(--muted-foreground)",
               fontSize: 13,
               padding: "9px 10px",
             }}
@@ -2546,7 +2538,7 @@ function ArrayField({
               onChange={(event) => updateItem(index, event.currentTarget.value)}
               placeholder={placeholder}
               style={{
-                border: "1px solid #d1d5db",
+                border: "1px solid var(--border)",
                 borderRadius: 8,
                 fontSize: 14,
                 minWidth: 0,
@@ -2559,10 +2551,10 @@ function ArrayField({
               disabled={disabled}
               onClick={() => removeItem(index)}
               style={{
-                background: "white",
-                border: "1px solid #d1d5db",
+                background: "var(--background)",
+                border: "1px solid var(--border)",
                 borderRadius: 8,
-                color: "#374151",
+                color: "var(--foreground)",
                 cursor: disabled ? "not-allowed" : "pointer",
                 fontWeight: 700,
                 padding: "9px 12px",
@@ -2578,10 +2570,10 @@ function ArrayField({
         disabled={disabled}
         onClick={addItem}
         style={{
-          background: "white",
-          border: "1px solid #d1d5db",
+          background: "var(--background)",
+          border: "1px solid var(--border)",
           borderRadius: 8,
-          color: "#374151",
+          color: "var(--foreground)",
           cursor: disabled ? "not-allowed" : "pointer",
           fontWeight: 700,
           justifySelf: "start",
@@ -2591,7 +2583,7 @@ function ArrayField({
       >
         {newItemLabel}
       </button>
-      <span style={{ color: "#6b7280", fontSize: 12 }}>{children}</span>
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12 }}>{children}</span>
     </div>
   );
 }
@@ -2610,7 +2602,7 @@ function CheckboxField({
   onChange(value: boolean): void;
 }): React.JSX.Element {
   return (
-    <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+    <label style={{ color: "var(--foreground)", display: "grid", gap: 3, fontSize: 13 }}>
       <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
         <input
           checked={checked}
@@ -2620,7 +2612,7 @@ function CheckboxField({
         />
         {label}
       </span>
-      <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>{children}</span>
+      <span style={{ color: "var(--muted-foreground)", fontSize: 12, marginLeft: 22 }}>{children}</span>
     </label>
   );
 }
@@ -2653,7 +2645,7 @@ function RoutingRow({
   return (
     <div
       style={{
-        border: "1px solid #e5e7eb",
+        border: "1px solid var(--border)",
         borderRadius: 8,
         display: "grid",
         gap: 10,
@@ -2667,7 +2659,7 @@ function RoutingRow({
       <div style={{ display: "grid", gap: 10 }}>
         <div style={twoColumnGridStyle}>
           <label style={pairedFieldStyle}>
-            <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Chat ID</span>
+            <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Chat ID</span>
             <input
               disabled={disabled}
               onChange={(event) => onChatIdChange(event.currentTarget.value)}
@@ -2679,7 +2671,7 @@ function RoutingRow({
             <span style={helperTextStyle}>{chatHelp}</span>
           </label>
           <label style={pairedFieldStyle}>
-            <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Topic ID</span>
+            <span style={{ color: "var(--muted-foreground)", fontSize: 12, fontWeight: 700 }}>Topic ID</span>
             <input
               disabled={disabled}
               onChange={(event) => onTopicIdChange(event.currentTarget.value)}
