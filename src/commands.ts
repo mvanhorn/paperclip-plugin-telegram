@@ -105,6 +105,7 @@ export async function handleCommand(
   companyId?: string,
   boardApiToken?: string,
   maxAgentsPerThread?: number,
+  connectCompanyIds?: readonly string[],
 ): Promise<void> {
   await ctx.metrics.write(METRIC_NAMES.commandsHandled, 1);
 
@@ -134,7 +135,7 @@ export async function handleCommand(
       await handleHelp(ctx, token, chatId, messageThreadId);
       break;
     case "connect":
-      await handleConnect(ctx, token, chatId, args, messageThreadId);
+      await handleConnect(ctx, token, chatId, args, messageThreadId, connectCompanyIds);
       break;
     case "connect_topic":
       await handleConnectTopic(ctx, token, chatId, args, messageThreadId);
@@ -392,16 +393,33 @@ async function handleHelp(
   });
 }
 
+// Background commands cannot discover companies with an unscoped list call:
+// it races with live host invocations. IDs come from verified config deliveries;
+// re-reading each explicit company lets the host enforce current authorization.
+async function connectCompanies(ctx: PluginContext, companyIds?: readonly string[]) {
+  if (companyIds === undefined) return ctx.companies.list();
+  const companies = await Promise.all(companyIds.map(async (id) => {
+    try {
+      return await ctx.companies.get(id);
+    } catch {
+      // A company may have been removed or its plugin access revoked.
+      return null;
+    }
+  }));
+  return companies.filter((company) => company !== null);
+}
+
 async function handleConnect(
   ctx: PluginContext,
   token: string,
   chatId: string,
   companyArg: string,
   messageThreadId?: number,
+  connectCompanyIds?: readonly string[],
 ): Promise<void> {
   if (!companyArg.trim()) {
     try {
-      const companies = await ctx.companies.list();
+      const companies = await connectCompanies(ctx, connectCompanyIds);
       const names = companies.map((c) => c.name || c.id).join(", ");
       await sendMessage(ctx, token, chatId, `Usage: /connect <company-name>\nAvailable: ${names || "none"}`, { messageThreadId });
     } catch {
@@ -412,7 +430,7 @@ async function handleConnect(
 
   try {
     const input = companyArg.trim();
-    const companies = await ctx.companies.list();
+    const companies = await connectCompanies(ctx, connectCompanyIds);
     const match = companies.find(
       (c) =>
         c.id === input ||
