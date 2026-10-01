@@ -159,11 +159,21 @@ describe("settings form secret refs", () => {
     expect(secretIdFromRef({ type: "other", secretId: VALID_UUID })).toBe("");
   });
 
-  it("persists a UUID or an existing object as a latest secret_ref", () => {
+  it("persists a UUID or an unversioned object as latest", () => {
     const expected = { type: "secret_ref", secretId: VALID_UUID, version: "latest" };
     expect(persistedSecretRef(VALID_UUID)).toEqual(expected);
     expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID })).toEqual(expected);
-    expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID, version: 4 })).toEqual(expected);
+    expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID, version: "latest" })).toEqual(expected);
+    expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID, version: 0 })).toEqual(expected);
+    expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID, version: "4" })).toEqual(expected);
+  });
+
+  it("keeps a numeric version pin already stored on the reference", () => {
+    expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID, version: 4 })).toEqual({
+      type: "secret_ref",
+      secretId: VALID_UUID,
+      version: 4,
+    });
   });
 
   it("leaves empty and invalid values empty instead of writing an object", () => {
@@ -190,6 +200,16 @@ describe("settings form secret refs", () => {
       type: "secret_ref",
       secretId: VALID_UUID_2,
       version: "latest",
+    });
+    expect(
+      withPersistedSecretRefs({
+        telegramBotTokenRef: { type: "secret_ref", secretId: VALID_UUID, version: 4 },
+        paperclipPublicUrl: "https://pmo.datactil.com",
+      }).telegramBotTokenRef,
+    ).toEqual({
+      type: "secret_ref",
+      secretId: VALID_UUID,
+      version: 4,
     });
     expect(saved.transcriptionApiKeyRef).toBe("");
     expect(saved.paperclipPublicUrl).toBe("https://pmo.datactil.com");

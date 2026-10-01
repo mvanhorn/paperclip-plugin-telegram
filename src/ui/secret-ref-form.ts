@@ -3,7 +3,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export type PersistedSecretRef = {
   type: "secret_ref";
   secretId: string;
-  version: "latest";
+  version: "latest" | number;
 };
 
 const SECRET_REF_CONFIG_KEYS = [
@@ -29,14 +29,23 @@ export function secretIdFromRef(value: unknown): string {
   return readSecretId(value);
 }
 
+function readPinnedVersion(value: unknown): "latest" | number | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const version = (value as { version?: unknown }).version;
+  if (version === "latest") return "latest";
+  if (typeof version === "number" && Number.isInteger(version) && version > 0) return version;
+  return undefined;
+}
+
 /**
  * Shape Paperclip 2026.831+ persists for `format: "secret-ref"` config fields.
  * Empty values stay empty so optional fields are not sent as invalid objects.
+ * A numeric pin or an existing `"latest"` is kept; a bare UUID defaults to `"latest"`.
  */
 export function persistedSecretRef(value: unknown): PersistedSecretRef | "" {
   const secretId = readSecretId(value);
   if (!secretId) return "";
-  return { type: "secret_ref", secretId, version: "latest" };
+  return { type: "secret_ref", secretId, version: readPinnedVersion(value) ?? "latest" };
 }
 
 /** Rewrite the three secret-ref config fields into the object shape on save. */
