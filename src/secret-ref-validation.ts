@@ -57,6 +57,20 @@ export function normalizeSecretRef(value: unknown): SecretRef | null {
   return isValidSecretRef(value) ? value : null;
 }
 
+/**
+ * Settings-form helpers live under `src/ui/` and are bundled into
+ * `dist/ui/index.js`. The host fetches that entry and imports it from a
+ * blob: URL, which cannot resolve a relative specifier such as
+ * `./secret-ref-form.js`. Re-exported here so workers and tests share them
+ * without going through the UI bundle.
+ */
+export {
+  persistedSecretRef,
+  secretIdFromRef,
+  withPersistedSecretRefs,
+  type PersistedSecretRef,
+} from "./ui/secret-ref-form.js";
+
 function describeBadValue(value: unknown): string {
   if (value === undefined || value === null) return "<empty>";
   if (typeof value === "object") return "<object>";
