@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isValidSecretRef, validateSecretRefFields, normalizeSecretRef } from "../src/secret-ref-validation.js";
+import {
+  isValidSecretRef,
+  validateSecretRefFields,
+  normalizeSecretRef,
+  persistedSecretRef,
+  secretIdFromRef,
+  withPersistedSecretRefs,
+} from "../src/secret-ref-validation.js";
 
 const VALID_UUID = "12f7ed4a-1234-4d0c-9abc-bd58d44d15e1";
 const VALID_UUID_2 = "abcdef01-2345-6789-abcd-ef0123456789";
@@ -139,5 +146,52 @@ describe("normalizeSecretRef", () => {
     expect(normalizeSecretRef("")).toBeNull();
     expect(normalizeSecretRef(null)).toBeNull();
     expect(normalizeSecretRef({ type: "other", secretId: "x" })).toBeNull();
+  });
+});
+
+describe("settings form secret refs", () => {
+  it("reads the secret id from a bare UUID or a secret_ref object", () => {
+    expect(secretIdFromRef(`  ${VALID_UUID}  `)).toBe(VALID_UUID);
+    expect(secretIdFromRef({ type: "secret_ref", secretId: VALID_UUID, version: "latest" })).toBe(VALID_UUID);
+    expect(secretIdFromRef({ type: "secret_ref", secretId: VALID_UUID, version: 2 })).toBe(VALID_UUID);
+    expect(secretIdFromRef("")).toBe("");
+    expect(secretIdFromRef("not-a-uuid")).toBe("");
+    expect(secretIdFromRef({ type: "other", secretId: VALID_UUID })).toBe("");
+  });
+
+  it("persists a UUID or an existing object as a latest secret_ref", () => {
+    const expected = { type: "secret_ref", secretId: VALID_UUID, version: "latest" };
+    expect(persistedSecretRef(VALID_UUID)).toEqual(expected);
+    expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID })).toEqual(expected);
+    expect(persistedSecretRef({ type: "secret_ref", secretId: VALID_UUID, version: 4 })).toEqual(expected);
+  });
+
+  it("leaves empty and invalid values empty instead of writing an object", () => {
+    expect(persistedSecretRef("")).toBe("");
+    expect(persistedSecretRef("   ")).toBe("");
+    expect(persistedSecretRef(null)).toBe("");
+    expect(persistedSecretRef("raw-bot-token")).toBe("");
+  });
+
+  it("rewrites only the three secret-ref fields when saving plugin config", () => {
+    const saved = withPersistedSecretRefs({
+      telegramBotTokenRef: VALID_UUID,
+      paperclipBoardApiTokenRef: { type: "secret_ref", secretId: VALID_UUID_2 },
+      transcriptionApiKeyRef: "",
+      paperclipPublicUrl: "https://pmo.datactil.com",
+    });
+
+    expect(saved.telegramBotTokenRef).toEqual({
+      type: "secret_ref",
+      secretId: VALID_UUID,
+      version: "latest",
+    });
+    expect(saved.paperclipBoardApiTokenRef).toEqual({
+      type: "secret_ref",
+      secretId: VALID_UUID_2,
+      version: "latest",
+    });
+    expect(saved.transcriptionApiKeyRef).toBe("");
+    expect(saved.paperclipPublicUrl).toBe("https://pmo.datactil.com");
   });
 });

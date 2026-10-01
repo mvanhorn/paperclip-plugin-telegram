@@ -4,6 +4,7 @@ import {
   usePluginData,
   type PluginSettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
+import { secretIdFromRef, withPersistedSecretRefs } from "./secret-ref-form.js";
 
 type BoardAccessRegistration = {
   configured: boolean;
@@ -292,7 +293,7 @@ function extractRoutingConfig(config: Record<string, unknown>): TelegramRoutingC
 
 function extractConnectionConfig(config: Record<string, unknown>): TelegramConnectionConfig {
   return {
-    telegramBotTokenRef: asString(config.telegramBotTokenRef),
+    telegramBotTokenRef: secretIdFromRef(config.telegramBotTokenRef),
     paperclipBaseUrl: asString(config.paperclipBaseUrl) || DEFAULT_CONNECTION_CONFIG.paperclipBaseUrl,
     paperclipPublicUrl: asString(config.paperclipPublicUrl),
   };
@@ -300,7 +301,7 @@ function extractConnectionConfig(config: Record<string, unknown>): TelegramConne
 
 function extractBoardConfig(config: Record<string, unknown>): TelegramBoardConfig {
   return {
-    paperclipBoardApiTokenRef: asString(config.paperclipBoardApiTokenRef),
+    paperclipBoardApiTokenRef: secretIdFromRef(config.paperclipBoardApiTokenRef),
   };
 }
 
@@ -315,7 +316,7 @@ function extractAccessConfig(config: Record<string, unknown>): TelegramAccessCon
 
 function extractMediaConfig(config: Record<string, unknown>): TelegramMediaConfig {
   return {
-    transcriptionApiKeyRef: asString(config.transcriptionApiKeyRef),
+    transcriptionApiKeyRef: secretIdFromRef(config.transcriptionApiKeyRef),
     briefAgentId: asString(config.briefAgentId),
     briefAgentChatIds: asStringArray(config.briefAgentChatIds),
   };
@@ -583,9 +584,10 @@ async function fetchCompanySecrets(companyId: string): Promise<CompanySecretSumm
 
 async function savePluginConfig(configJson: Record<string, unknown>, companyId?: string | null): Promise<void> {
   const scopedCompanyId = companyId?.trim();
+  const persistedConfig = withPersistedSecretRefs(configJson);
   await fetchHostJson(pluginConfigPath(), {
     method: "POST",
-    body: JSON.stringify(scopedCompanyId ? { configJson, companyId: scopedCompanyId } : { configJson }),
+    body: JSON.stringify(scopedCompanyId ? { configJson: persistedConfig, companyId: scopedCompanyId } : { configJson: persistedConfig }),
   });
 }
 

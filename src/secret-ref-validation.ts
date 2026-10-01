@@ -57,6 +57,17 @@ export function normalizeSecretRef(value: unknown): SecretRef | null {
   return isValidSecretRef(value) ? value : null;
 }
 
+/**
+ * Settings-form helpers live under `src/ui/` because the host only serves
+ * `dist/ui/` to the browser. Re-exported here so workers and tests share them.
+ */
+export {
+  persistedSecretRef,
+  secretIdFromRef,
+  withPersistedSecretRefs,
+  type PersistedSecretRef,
+} from "./ui/secret-ref-form.js";
+
 function describeBadValue(value: unknown): string {
   if (value === undefined || value === null) return "<empty>";
   if (typeof value === "object") return "<object>";
