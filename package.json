@@ -8,7 +8,7 @@
     "worker": "./dist/worker.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && esbuild src/ui/index.tsx --bundle --format=esm --platform=browser --outfile=dist/ui/index.js --sourcemap --external:react --external:react/jsx-runtime --external:react-dom --external:@paperclipai/plugin-sdk --external:@paperclipai/plugin-sdk/ui && node scripts/assert-single-ui-entry.mjs",
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
     "test": "vitest run",
@@ -23,6 +23,7 @@
   "devDependencies": {
     "@paperclipai/plugin-sdk": "^2026.722.0",
     "@paperclipai/shared": "^2026.722.0",
+    "esbuild": "0.28.1",
     "typescript": "^5.7.0",
     "vitest": "^3.2.6",
     "@types/node": "^22.0.0",

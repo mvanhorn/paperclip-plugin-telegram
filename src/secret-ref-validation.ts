@@ -58,8 +58,11 @@ export function normalizeSecretRef(value: unknown): SecretRef | null {
 }
 
 /**
- * Settings-form helpers live under `src/ui/` because the host only serves
- * `dist/ui/` to the browser. Re-exported here so workers and tests share them.
+ * Settings-form helpers live under `src/ui/` and are bundled into
+ * `dist/ui/index.js`. The host fetches that entry and imports it from a
+ * blob: URL, which cannot resolve a relative specifier such as
+ * `./secret-ref-form.js`. Re-exported here so workers and tests share them
+ * without going through the UI bundle.
  */
 export {
   persistedSecretRef,
