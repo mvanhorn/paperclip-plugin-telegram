@@ -25,8 +25,21 @@ import {
   formatAgentError,
   formatAgentRunStarted,
   formatAgentRunFinished,
+  formatIssueInteraction,
+  formatIssueInteractionNotice,
   type IssueLinksOpts,
 } from "./formatters.js";
+import {
+  isActionableInteraction,
+  isNotifyOnlyInteraction,
+  isForwardableInteraction,
+  parseInteractionCallbackData,
+  createRecentIssueTracker,
+  mergeInteractionCandidates,
+  type InteractionCandidate,
+  INTERACTION_ENTITY_TYPE,
+  INTERACTION_REASON_ENTITY_TYPE,
+} from "./interaction-routing.js";
 import { handleCommand, resolveNotificationThreadId, BOT_COMMANDS } from "./commands.js";
 import {
   routeMessageToAgent,
@@ -78,6 +91,10 @@ type TelegramConfig = {
   onlyNotifyIfAssignedTo: string;
   notifyOnApprovalCreated: boolean;
   onlyNotifyBoardApprovals: boolean;
+  notifyOnIssueInteraction: boolean;
+  issueInteractionsChatId: string;
+  issueInteractionsTopicId: string;
+  issueInteractionActorUserId: string;
   notifyOnAgentError: boolean;
   notifyOnAgentRunStarted: boolean;
   notifyOnAgentRunFinished: boolean;
@@ -215,9 +232,34 @@ type TelegramRuntime = {
 // behavior.
 const escalationManager = new EscalationManager();
 const issuePrefixCache = new Map<string, string>();
+
+// Issues the plugin has recently seen events for, polled by the
+// `check-issue-interactions` fallback job (see pollIssueInteractions). Bounded
+// by TTL and size inside the tracker so it never grows with the board.
+const recentIssueActivity = createRecentIssueTracker();
+
+// How wide a single fallback poll tick may reach. A pending decision can sit on
+// an issue in any open status (a 36h-old backlog decision was observed live on
+// an `in_review` issue), so the poll pages a few open statuses, not just
+// in-progress — but each page is bounded and the merged candidate set is capped
+// so a busy board cannot turn one tick into hundreds of listInteractions calls.
+const ISSUE_INTERACTION_POLL_STATUSES = [
+  "in_progress",
+  "in_review",
+  "blocked",
+  "todo",
+  "backlog",
+] as const;
+const ISSUE_INTERACTION_POLL_LIST_LIMIT = 20;
+const ISSUE_INTERACTION_POLL_MAX_CANDIDATES = 60;
 const doneDedupe = makeUpdateDedupe();
 const assignmentDedupe = makeUpdateDedupe();
 const agentErrorDedupe = makeUpdateDedupe(AGENT_ERROR_DEDUPLICATION_WINDOW_MS, 1000);
+// Collapses the duplicate issue.updated events Paperclip core emits for one
+// change (and a racing poll tick) into a single send per interaction — the
+// persistent interaction-seen:<id> state is read-then-write non-atomic, so a
+// burst can all pass the seen-check before any one writes it.
+const interactionSendDedupe = makeUpdateDedupe();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -380,7 +422,7 @@ function parseTopicId(value?: string): number | undefined {
 
 function validateConfiguredTopicIds(config: Record<string, unknown>): string[] {
   const errors: string[] = [];
-  for (const key of ["approvalsTopicId", "errorsTopicId", "digestTopicId"]) {
+  for (const key of ["approvalsTopicId", "errorsTopicId", "digestTopicId", "issueInteractionsTopicId"]) {
     const value = config[key];
     if (value === undefined || value === null || value === "") continue;
     if (typeof value !== "string" || !parseTopicId(value)) {
@@ -440,6 +482,25 @@ function stableConfigJson(config: unknown): string {
     return value;
   };
   return JSON.stringify(normalize(config ?? null));
+}
+
+/**
+ * The secret UUID a config's bot-token reference points at, in either ref
+ * shape, or null. Used to confirm two deliveries describe the *same* install
+ * (one shared bot token) without resolving the secret.
+ */
+function botTokenSecretId(config: unknown): string | null {
+  const ref = normalizeSecretRef((config as Record<string, unknown> | null)?.telegramBotTokenRef);
+  return ref && typeof ref === "object" ? ref.secretId : null;
+}
+
+function safeParseJson(json: string | null): unknown {
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -803,6 +864,158 @@ async function notify(
   }
 }
 
+/**
+ * Discover and notify pending decision cards on an issue.
+ *
+ * Called from issue.created/issue.updated — the host has no dedicated
+ * `interaction.created` event, but posting a decision card to a thread updates
+ * its issue, so listing the issue's interactions on each change catches new
+ * ones. Only still-pending `request_confirmation` cards are actionable from
+ * Telegram (see interaction-routing.ts); everything else is left to the digest.
+ *
+ * `interaction-seen:<id>` dedupes across the many issue.updated events a single
+ * card's lifecycle emits. Best-effort throughout: a decision card that cannot be
+ * delivered must never wedge the event handler or the polling offset.
+ */
+async function checkIssueInteractions(
+  ctx: PluginContext,
+  rt: TelegramRuntime,
+  issueId: string,
+  companyId: string,
+): Promise<void> {
+  if (!rt.config.notifyOnIssueInteraction || !issueId) return;
+
+  let interactions: Awaited<ReturnType<typeof ctx.issues.listInteractions>>;
+  try {
+    interactions = await ctx.issues.listInteractions(issueId, companyId);
+  } catch (err) {
+    ctx.logger.warn("Failed to list issue interactions", { issueId, companyId, error: String(err) });
+    return;
+  }
+
+  const forwardable = interactions.filter(isForwardableInteraction);
+  if (forwardable.length === 0) return;
+
+  const chatId = await resolveChat(
+    ctx,
+    companyId,
+    rt.config.issueInteractionsChatId || rt.config.approvalsChatId || rt.config.defaultChatId,
+  );
+  if (!chatId) return;
+
+  const linksOpts = await resolveIssueLinksOpts(ctx, rt.publicUrl, companyId);
+  const messageThreadId =
+    parseTopicId(rt.config.issueInteractionsTopicId) ?? parseTopicId(rt.config.approvalsTopicId);
+
+  // Fetch issue metadata once for the whole batch (identifier/title for the link).
+  let issueInfo: { identifier?: string | null; title?: string | null } = {};
+  try {
+    const issue = await ctx.issues.get(issueId, companyId);
+    if (issue) issueInfo = { identifier: issue.identifier, title: issue.title };
+  } catch { /* best effort — the card still sends without the link */ }
+
+  for (const interaction of forwardable) {
+    // Atomic in-process claim: whichever of a duplicate-event burst (or a
+    // racing poll tick) reaches this synchronous check first wins; the rest
+    // short-circuit before the send. This closes the read-then-write race on
+    // the persistent interaction-seen:<id> state below, which on its own let
+    // concurrent duplicates all pass the seen-check and send 2–3× (observed
+    // live). The persistent flag still handles dedupe across ticks/restarts.
+    if (!interactionSendDedupe(interaction.id)) continue;
+
+    const seenKey = `interaction-seen:${interaction.id}`;
+    const alreadySeen = await ctx.state.get({ scopeKind: "instance", stateKey: seenKey });
+    if (alreadySeen) continue;
+
+    let msg;
+    if (isActionableInteraction(interaction)) {
+      msg = formatIssueInteraction(interaction, issueInfo, linksOpts);
+    } else if (isNotifyOnlyInteraction(interaction)) {
+      msg = formatIssueInteractionNotice(interaction, issueInfo, linksOpts);
+    } else {
+      continue; // unreachable after the isForwardableInteraction filter
+    }
+    if (messageThreadId) msg.options.messageThreadId = messageThreadId;
+
+    const messageId = await sendMessage(ctx, rt.token, chatId, msg.text, msg.options);
+    if (!messageId) continue;
+
+    // Only actionable cards carry accept/reject buttons, so only they need the
+    // `msg_` mapping the callback/reason-reply handlers recover from. Notify-only
+    // cards have just a deep link — no callback ever hits them.
+    if (isActionableInteraction(interaction)) {
+      await ctx.state.set(
+        { scopeKind: "instance", stateKey: `msg_${chatId}_${messageId}` },
+        {
+          entityId: issueId,
+          entityType: INTERACTION_ENTITY_TYPE,
+          companyId,
+          interactionId: interaction.id,
+          rejectRequiresReason: Boolean(interaction.payload.rejectRequiresReason),
+        },
+      );
+    }
+    await ctx.state.set({ scopeKind: "instance", stateKey: seenKey }, { messageId, chatId });
+    await ctx.activity.log({
+      companyId,
+      message: "Forwarded decision card to Telegram",
+      entityType: "plugin",
+      entityId: issueId,
+    });
+  }
+}
+
+/**
+ * Scheduler-poll fallback for decision cards (manifest job
+ * `check-issue-interactions`, ~1/min).
+ *
+ * The event-driven path (issue.created/issue.updated → checkIssueInteractions)
+ * misses a card posted without a *subsequent* issue.updated: issue.created
+ * fires before the card exists, and card creation need not emit a
+ * plugin-visible issue.updated. This re-lists interactions for a BOUNDED
+ * candidate set — issues recently seen in events, plus a small page per open
+ * status of the owner's issues (a pending decision can sit on any open status,
+ * not just in-progress) — never the whole board. `interaction-seen:<id>` dedupe
+ * inside checkIssueInteractions keeps this from double-sending alongside the
+ * event path.
+ */
+async function pollIssueInteractions(ctx: PluginContext, rt: TelegramRuntime): Promise<void> {
+  const tracked = recentIssueActivity.candidates();
+
+  // Secondary bounded net: a small page per open status of the owner company's
+  // issues catches a card on an issue the plugin saw no event for at all.
+  // Best-effort per status — a listing failure must never starve the rest.
+  const listedByStatus: InteractionCandidate[][] = [];
+  for (const status of ISSUE_INTERACTION_POLL_STATUSES) {
+    try {
+      const issues = await ctx.issues.list({
+        companyId: rt.companyId,
+        status,
+        limit: ISSUE_INTERACTION_POLL_LIST_LIMIT,
+      });
+      listedByStatus.push(
+        issues
+          .filter((issue): issue is typeof issue & { id: string } => Boolean(issue?.id))
+          .map((issue) => ({ issueId: issue.id, companyId: rt.companyId })),
+      );
+    } catch (err) {
+      ctx.logger.debug("Issue-interaction poll could not list issues", {
+        companyId: rt.companyId,
+        status,
+        error: String(err),
+      });
+    }
+  }
+
+  const candidates = mergeInteractionCandidates(
+    [tracked, ...listedByStatus],
+    ISSUE_INTERACTION_POLL_MAX_CANDIDATES,
+  );
+  for (const candidate of candidates) {
+    await checkIssueInteractions(ctx, rt, candidate.issueId, candidate.companyId);
+  }
+}
+
 const enrichAgentName = async (ctx: PluginContext, event: PluginEvent) => {
   const payload = event.payload as Record<string, unknown>;
   if (payload.agentId && !payload.agentName) {
@@ -974,6 +1187,21 @@ export const plugin = definePlugin({
       }
       await notify(ctx, rt, event, formatApprovalCreated, rt.config.approvalsChatId, rt.config.approvalsTopicId);
     });
+
+    // Decision cards (issue-thread `request_confirmation` interactions). No
+    // dedicated `interaction.created` event exists, so discovery rides on the
+    // issue.created/issue.updated events the card's creation already emits.
+    const onIssueMaybeInteraction = async (event: PluginEvent) => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnIssueInteraction) return;
+      if (!event.entityId) return;
+      // Remember this issue so the fallback job re-lists it on a later tick: a
+      // card can land after this event with no further issue.updated to catch.
+      recentIssueActivity.record(event.entityId, event.companyId);
+      await checkIssueInteractions(ctx, rt, event.entityId, event.companyId);
+    };
+    ctx.events.on("issue.created", onIssueMaybeInteraction);
+    ctx.events.on("issue.updated", onIssueMaybeInteraction);
 
     ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
       const rt = ensureRuntime();
@@ -1364,6 +1592,19 @@ export const plugin = definePlugin({
       }
     });
 
+    // --- Decision-card poll fallback job ---
+    // Event-driven detection can miss a card that appears without a following
+    // issue.updated; this catches it within a tick (see pollIssueInteractions).
+    ctx.jobs.register("check-issue-interactions", async () => {
+      const rt = ensureRuntime();
+      if (!rt || !rt.config.notifyOnIssueInteraction) return;
+      try {
+        await pollIssueInteractions(ctx, rt);
+      } catch (err) {
+        ctx.logger.error("Issue-interaction poll failed", { error: String(err) });
+      }
+    });
+
     // --- Phase 5: Watch checker job ---
     ctx.jobs.register("check-watches", async () => {
       const rt = ensureRuntime();
@@ -1391,7 +1632,30 @@ export const plugin = definePlugin({
     if (!ctx) return;
 
     await queueBootstrap(async () => {
-      const companyId = await identifyDeliveredCompany(ctx, newConfig);
+      let companyId = await identifyDeliveredCompany(ctx, newConfig);
+
+      // Hot-reload hardening. A config SAVE can arrive here without a readable
+      // company scope (unlike worker start, which binds exactly one), so
+      // `identifyDeliveredCompany` returns null and the new config — e.g. a
+      // freshly-enabled notifyOnIssueInteraction — would be silently dropped
+      // until a disable→enable worker restart forced a re-read. That matches a
+      // flag-not-taking-effect symptom seen live. We already own a runtime for
+      // this install and the bot token is a single shared instance secret, so
+      // a save can only be the owner's: apply it to the owner once the
+      // delivered config carries the owner's bot token, so a stray delivery can
+      // never hot-swap the running runtime.
+      if (!companyId && ownerCompanyId) {
+        const deliveredSecretId = botTokenSecretId(newConfig);
+        const ownerSecretId = botTokenSecretId(safeParseJson(ownerConfigJson));
+        if (deliveredSecretId && ownerSecretId && deliveredSecretId === ownerSecretId) {
+          ctx.logger.info(
+            "Telegram plugin applying a configuration delivery to the current owner after attribution came back empty",
+            { ownerCompanyId },
+          );
+          companyId = ownerCompanyId;
+        }
+      }
+
       if (!companyId) {
         ctx.logger.warn(
           "Telegram plugin could not attribute a configuration delivery to a company; leaving current runtime unchanged",
@@ -1463,7 +1727,7 @@ export async function handleUpdate(
   if (update.callback_query) {
     const companyId = await resolveCallbackCompanyId(ctx, update.callback_query);
     const boardApiToken = await resolveBoardApiToken(ctx, config, companyId);
-    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl, boardApiToken);
+    await handleCallbackQuery(ctx, token, update.callback_query, baseUrl, boardApiToken, config.issueInteractionActorUserId);
     return;
   }
 
@@ -1538,9 +1802,42 @@ export async function handleUpdate(
     const mapping = await ctx.state.get({
       scopeKind: "instance",
       stateKey: `msg_${chatId}_${replyToId}`,
-    }) as { entityId: string; entityType: string; companyId: string } | null;
+    }) as {
+      entityId: string;
+      entityType: string;
+      companyId: string;
+      interactionId?: string;
+      cardMessageId?: number;
+    } | null;
 
-    if (mapping && mapping.entityType === "escalation") {
+    if (mapping && mapping.entityType === INTERACTION_REASON_ENTITY_TYPE && mapping.interactionId) {
+      // The reply carries the rejection reason captured by the force-reply
+      // prompt handleInteractionCallback sent. Resolve the card now, editing
+      // the original decision message (not the prompt) to show the outcome.
+      const actorUserId = config.issueInteractionActorUserId;
+      const actorLabel = msg.from?.username ?? msg.from?.first_name ?? String(msg.from?.id ?? chatId);
+      if (!actorUserId) {
+        await sendMessage(ctx, token, chatId, "No board user is configured for decisions.", {
+          replyToMessageId: msg.message_id,
+        });
+      } else {
+        await applyInteractionDecision(
+          ctx,
+          token,
+          {
+            issueId: mapping.entityId,
+            companyId: mapping.companyId,
+            interactionId: mapping.interactionId,
+            chatId,
+            messageId: mapping.cardMessageId ?? replyToId,
+          },
+          "reject",
+          actorUserId,
+          text,
+          actorLabel,
+        );
+      }
+    } else if (mapping && mapping.entityType === "escalation") {
       const escalationManager = new EscalationManager();
       const responderId = `telegram:${msg.from?.username ?? msg.from?.id ?? chatId}`;
       await escalationManager.respond(ctx, token, mapping.entityId, {
@@ -1575,12 +1872,157 @@ export async function handleUpdate(
   }
 }
 
+type InteractionCardRef = {
+  issueId: string;
+  companyId: string;
+  interactionId: string;
+  chatId: string;
+  messageId: number;
+};
+
+/**
+ * Resolve (accept/reject) a decision card and report the outcome.
+ *
+ * `respondInteraction` decides ON BEHALF OF `actorUserId`; the host re-verifies
+ * that user is an active human member before applying, so a missing/invalid
+ * actor fails host-side rather than resolving as the wrong identity. `applied`
+ * is false on an idempotent replay (the card was already resolved) — reported
+ * as such instead of claiming this click did it.
+ */
+async function applyInteractionDecision(
+  ctx: PluginContext,
+  token: string,
+  card: InteractionCardRef,
+  action: "accept" | "reject",
+  actorUserId: string,
+  reason: string | null,
+  actorLabel: string,
+  callbackQueryId?: string,
+): Promise<void> {
+  try {
+    const { applied } = await ctx.issues.respondInteraction(
+      card.issueId,
+      card.interactionId,
+      { action, actorUserId, reason },
+      card.companyId,
+    );
+
+    const icon = action === "accept" ? "✅" : "❌";
+    const verb = action === "accept" ? "Approved" : "Rejected";
+    const suffix = applied ? "" : " (already resolved)";
+    let body = `${escapeMarkdownV2(icon)} *${escapeMarkdownV2(verb + suffix)}* by ${escapeMarkdownV2(actorLabel)}`;
+    if (reason) body += `\n${escapeMarkdownV2(`Reason: ${reason}`)}`;
+
+    await editMessage(ctx, token, card.chatId, card.messageId, body, { parseMode: "MarkdownV2" });
+    if (callbackQueryId) await answerCallbackQuery(ctx, token, callbackQueryId, `${verb}${suffix}`);
+    if (applied) await ctx.metrics.write(METRIC_NAMES.interactionsResolved, 1);
+
+    ctx.logger.info("Resolved issue-thread interaction from Telegram", {
+      interactionId: card.interactionId,
+      issueId: card.issueId,
+      action,
+      applied,
+      actor: actorLabel,
+    });
+  } catch (err) {
+    ctx.logger.error("Failed to resolve issue-thread interaction", {
+      interactionId: card.interactionId,
+      action,
+      error: String(err),
+    });
+    if (callbackQueryId) await answerCallbackQuery(ctx, token, callbackQueryId, `Failed: ${String(err)}`);
+  }
+}
+
+async function handleInteractionCallback(
+  ctx: PluginContext,
+  token: string,
+  query: NonNullable<TelegramUpdate["callback_query"]>,
+  callback: { action: "accept" | "reject"; interactionId: string },
+  actorUserId?: string,
+): Promise<void> {
+  const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
+  const messageId = query.message?.message_id;
+  const actorLabel = query.from.username ?? query.from.first_name ?? String(query.from.id);
+
+  if (!chatId || !messageId) {
+    await answerCallbackQuery(ctx, token, query.id, "This decision is no longer available");
+    return;
+  }
+
+  const mapping = (await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: `msg_${chatId}_${messageId}`,
+  })) as
+    | { entityId: string; entityType: string; companyId: string; interactionId?: string; rejectRequiresReason?: boolean }
+    | null;
+
+  if (
+    !mapping ||
+    mapping.entityType !== INTERACTION_ENTITY_TYPE ||
+    mapping.interactionId !== callback.interactionId
+  ) {
+    await answerCallbackQuery(ctx, token, query.id, "This decision is no longer available");
+    return;
+  }
+
+  // Responding resolves the card in a human's name — never guess the identity.
+  if (!actorUserId) {
+    await answerCallbackQuery(
+      ctx,
+      token,
+      query.id,
+      "No board user is configured for decisions (set issueInteractionActorUserId)",
+    );
+    return;
+  }
+
+  const card: InteractionCardRef = {
+    issueId: mapping.entityId,
+    companyId: mapping.companyId,
+    interactionId: callback.interactionId,
+    chatId,
+    messageId,
+  };
+
+  // Rejection that demands a reason: ask for it via force-reply and resolve on
+  // the reply (routed through the inbound `msg_` reply block in handleUpdate).
+  if (callback.action === "reject" && mapping.rejectRequiresReason) {
+    const promptMessageId = await sendMessage(
+      ctx,
+      token,
+      chatId,
+      "Reply to this message with a reason for rejecting.",
+      { forceReply: true },
+    );
+    if (promptMessageId) {
+      await ctx.state.set(
+        { scopeKind: "instance", stateKey: `msg_${chatId}_${promptMessageId}` },
+        {
+          entityId: card.issueId,
+          entityType: INTERACTION_REASON_ENTITY_TYPE,
+          companyId: card.companyId,
+          interactionId: card.interactionId,
+          cardMessageId: messageId,
+        },
+      );
+      await answerCallbackQuery(ctx, token, query.id, "Reply with a reason");
+    } else {
+      await answerCallbackQuery(ctx, token, query.id, "Could not start the reason prompt");
+    }
+    return;
+  }
+
+  await applyInteractionDecision(ctx, token, card, callback.action, actorUserId, null, actorLabel, query.id);
+}
+
 async function handleCallbackQuery(
   ctx: PluginContext,
   token: string,
   query: NonNullable<TelegramUpdate["callback_query"]>,
   baseUrl: string,
   boardApiToken?: string,
+  issueInteractionActorUserId?: string,
 ): Promise<void> {
   const data = query.data;
   if (!data) return;
@@ -1594,6 +2036,12 @@ async function handleCallbackQuery(
   // adjacent so the two approval flows are read together.
   if (isWorkflowApprovalCallback(data)) {
     await resolveWorkflowApprovalCallback(ctx, token, data, query.id, actor, messageId);
+    return;
+  }
+
+  const interactionCallback = parseInteractionCallbackData(data);
+  if (interactionCallback) {
+    await handleInteractionCallback(ctx, token, query, interactionCallback, issueInteractionActorUserId);
     return;
   }
 

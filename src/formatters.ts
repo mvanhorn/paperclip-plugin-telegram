@@ -1,7 +1,15 @@
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import type {
+  RequestConfirmationInteraction,
+  AskUserQuestionsInteraction,
+  RequestItemVerdictsInteraction,
+} from "@paperclipai/shared";
 import { escapeMarkdownV2, truncateAtWord } from "./telegram-api.js";
 import type { SendMessageOptions } from "./telegram-api.js";
 import { AGENT_ERROR_TRUNCATE_LENGTH } from "./constants.js";
+import {
+  buildInteractionCallbackData,
+} from "./interaction-routing.js";
 import { str } from "./coerce.js";
 
 type Payload = Record<string, unknown>;
@@ -346,6 +354,142 @@ export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts
       parseMode: "MarkdownV2",
       disableNotification: true,
       ...(buttons.length > 0 ? { inlineKeyboard: [buttons] } : {}),
+    },
+  };
+}
+
+export type InteractionIssueInfo = { identifier?: string | null; title?: string | null };
+
+// Daily decision card (issue-thread `request_confirmation`). Unlike the
+// event-based formatters above this takes the interaction object directly —
+// decision cards arrive via `ctx.issues.listInteractions`, not a PluginEvent.
+//
+// Two action buttons carry the interaction id in their `callback_data`
+// (`int_accept_`/`int_reject_` + UUID, ~47 bytes, well under Telegram's 64);
+// the callback handler recovers issue/company from the notification's stored
+// `msg_` mapping. Always loud: a decision card is something a human must act on.
+export function formatIssueInteraction(
+  interaction: RequestConfirmationInteraction,
+  issue: InteractionIssueInfo = {},
+  opts?: IssueLinksOpts,
+): FormattedMessage {
+  const payload = interaction.payload;
+  const heading = interaction.title?.trim() || "Decision needed";
+
+  const lines: string[] = [`${esc("🗳️")} ${bold(heading)}`];
+
+  const identifier = issue.identifier?.trim();
+  if (identifier) {
+    const title = issue.title?.trim();
+    lines.push(title ? `${issueLink(identifier, opts)} ${esc(title)}` : issueLink(identifier, opts));
+  }
+
+  lines.push(`\n${esc(truncateAtWord(payload.prompt, 500))}`);
+
+  const details = payload.detailsMarkdown?.trim();
+  if (details) lines.push(`\n${esc(truncateAtWord(details, 500))}`);
+
+  const acceptLabel = payload.acceptLabel?.trim() || "Approve";
+  const rejectLabel = payload.rejectLabel?.trim() || "Reject";
+
+  const keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>> = [
+    [
+      { text: `✅ ${acceptLabel}`, callback_data: buildInteractionCallbackData("accept", interaction.id) },
+      { text: `❌ ${rejectLabel}`, callback_data: buildInteractionCallbackData("reject", interaction.id) },
+    ],
+  ];
+
+  if (identifier) {
+    const btn = issueButton(identifier, opts);
+    if (btn) keyboard.push([btn]);
+  }
+
+  return {
+    text: lines.join("\n"),
+    options: {
+      parseMode: "MarkdownV2",
+      inlineKeyboard: keyboard,
+    },
+  };
+}
+
+// Caps so a card with many items/questions stays well inside Telegram's
+// 4096-char message limit; the deep link leads to the full list in Paperclip.
+const NOTICE_MAX_ITEMS = 10;
+const NOTICE_MAX_QUESTIONS = 8;
+const NOTICE_MAX_OPTIONS = 6;
+
+/**
+ * Notify-only card for a pending decision the plugin cannot resolve from
+ * Telegram: `ask_user_questions` and `request_item_verdicts`. `respondInteraction`
+ * is accept/reject only, so there is no button that answers these — the card
+ * summarizes what is pending and links out to Paperclip, where the board user
+ * answers. Always loud: a human must act. Carries no resolve `callback_data`,
+ * only an "Open" URL button, so the callback handler never has to touch it.
+ */
+export function formatIssueInteractionNotice(
+  interaction: AskUserQuestionsInteraction | RequestItemVerdictsInteraction,
+  issue: InteractionIssueInfo = {},
+  opts?: IssueLinksOpts,
+): FormattedMessage {
+  const isQuestions = interaction.kind === "ask_user_questions";
+  const heading =
+    interaction.title?.trim() || (isQuestions ? "Questions need answering" : "Items need review");
+
+  const lines: string[] = [`${esc("🗳️")} ${bold(heading)}`];
+
+  const identifier = issue.identifier?.trim();
+  if (identifier) {
+    const title = issue.title?.trim();
+    lines.push(title ? `${issueLink(identifier, opts)} ${esc(title)}` : issueLink(identifier, opts));
+  }
+
+  if (interaction.kind === "request_item_verdicts") {
+    const payload = interaction.payload;
+    lines.push(`\n${esc(truncateAtWord(payload.prompt, 400))}`);
+    const details = payload.detailsMarkdown?.trim();
+    if (details) lines.push(`\n${esc(truncateAtWord(details, 300))}`);
+
+    const items = payload.items ?? [];
+    const shown = items.slice(0, NOTICE_MAX_ITEMS);
+    if (shown.length > 0) {
+      lines.push("");
+      for (const item of shown) lines.push(esc(`• ${item.label}`));
+      if (items.length > shown.length) lines.push(esc(`…and ${items.length - shown.length} more`));
+    }
+  } else {
+    const payload = interaction.payload;
+    const title = payload.title?.trim();
+    if (title) lines.push(`\n${esc(truncateAtWord(title, 300))}`);
+
+    const questions = payload.questions ?? [];
+    const shown = questions.slice(0, NOTICE_MAX_QUESTIONS);
+    if (shown.length > 0) {
+      lines.push("");
+      for (const question of shown) {
+        lines.push(esc(`• ${truncateAtWord(question.prompt, 200)}`));
+        const options = (question.options ?? []).slice(0, NOTICE_MAX_OPTIONS).map((o) => o.label);
+        if (options.length > 0) lines.push(`  ${esc(options.join(" / "))}`);
+      }
+      if (questions.length > shown.length) {
+        lines.push(esc(`…and ${questions.length - shown.length} more`));
+      }
+    }
+  }
+
+  lines.push(`\n${esc("↗ Open in Paperclip to respond — this can't be answered from Telegram.")}`);
+
+  const keyboard: Array<Array<{ text: string; url: string }>> = [];
+  if (identifier) {
+    const btn = issueButton(identifier, opts);
+    if (btn) keyboard.push([btn]);
+  }
+
+  return {
+    text: lines.join("\n"),
+    options: {
+      parseMode: "MarkdownV2",
+      ...(keyboard.length > 0 ? { inlineKeyboard: keyboard } : {}),
     },
   };
 }

@@ -20,6 +20,15 @@ export const DEFAULT_CONFIG = {
   onlyNotifyIfAssignedTo: "",
   notifyOnApprovalCreated: true,
   onlyNotifyBoardApprovals: false,
+  // Issue-thread interactions ("decision cards"). Opt-in: responding resolves
+  // the card on behalf of a board user, so it stays off until configured.
+  notifyOnIssueInteraction: false,
+  issueInteractionsChatId: "",
+  issueInteractionsTopicId: "",
+  // Paperclip user id that accept/reject decisions are attributed to. The host
+  // re-verifies this is an active human member before applying. Empty disables
+  // the action buttons (notifications still send).
+  issueInteractionActorUserId: "",
   notifyOnAgentError: true,
   notifyOnAgentRunStarted: false,
   notifyOnAgentRunFinished: false,
@@ -68,6 +77,7 @@ export const METRIC_NAMES = {
   mediaProcessed: "telegram_media_processed",
   commandsExecuted: "telegram_custom_commands_executed",
   suggestionsEmitted: "telegram_suggestions_emitted",
+  interactionsResolved: "telegram_issue_interactions_resolved",
 } as const;
 
 // Cross-plugin ACP event names

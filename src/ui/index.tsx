@@ -68,6 +68,10 @@ type TelegramRoutingConfig = {
   approvalsTopicId: string;
   notifyOnApprovalCreated: boolean;
   onlyNotifyBoardApprovals: boolean;
+  issueInteractionsChatId: string;
+  issueInteractionsTopicId: string;
+  notifyOnIssueInteraction: boolean;
+  issueInteractionActorUserId: string;
   errorsChatId: string;
   errorsTopicId: string;
   notifyOnAgentError: boolean;
@@ -134,6 +138,10 @@ const DEFAULT_ROUTING_CONFIG: TelegramRoutingConfig = {
   approvalsTopicId: "",
   notifyOnApprovalCreated: true,
   onlyNotifyBoardApprovals: false,
+  issueInteractionsChatId: "",
+  issueInteractionsTopicId: "",
+  notifyOnIssueInteraction: false,
+  issueInteractionActorUserId: "",
   errorsChatId: "",
   errorsTopicId: "",
   notifyOnAgentError: true,
@@ -267,6 +275,13 @@ function extractRoutingConfig(config: Record<string, unknown>): TelegramRoutingC
       config.onlyNotifyBoardApprovals,
       DEFAULT_ROUTING_CONFIG.onlyNotifyBoardApprovals,
     ),
+    issueInteractionsChatId: asString(config.issueInteractionsChatId),
+    issueInteractionsTopicId: asString(config.issueInteractionsTopicId),
+    notifyOnIssueInteraction: asBoolean(
+      config.notifyOnIssueInteraction,
+      DEFAULT_ROUTING_CONFIG.notifyOnIssueInteraction,
+    ),
+    issueInteractionActorUserId: asString(config.issueInteractionActorUserId),
     errorsChatId: asString(config.errorsChatId),
     errorsTopicId: asString(config.errorsTopicId),
     notifyOnAgentError: asBoolean(
@@ -1760,6 +1775,58 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                   </span>
                   <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
                     Ignore internal approvals and notify only when an agent requests Board approval.
+                  </span>
+                </label>
+              </>
+            }
+          />
+
+          <RoutingRow
+            title="Decision cards"
+            chatId={routingConfig.issueInteractionsChatId}
+            topicId={routingConfig.issueInteractionsTopicId}
+            chatPlaceholder="Decision cards chat ID"
+            topicPlaceholder="Decision cards topic ID"
+            disabled={routingLoading || routingSaving}
+            onChatIdChange={(value) => updateRoutingField("issueInteractionsChatId", value)}
+            onTopicIdChange={(value) => updateRoutingField("issueInteractionsTopicId", value)}
+            chatHelp="Leave empty to fall back to the Approvals route, then the default route."
+            footer={
+              <>
+                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                  <span style={{ alignItems: "center", display: "flex", gap: 8 }}>
+                    <input
+                      checked={routingConfig.notifyOnIssueInteraction}
+                      disabled={routingLoading || routingSaving}
+                      onChange={(event) => updateRoutingField("notifyOnIssueInteraction", event.currentTarget.checked)}
+                      type="checkbox"
+                    />
+                    Enabled
+                  </span>
+                  <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 22 }}>
+                    Send daily issue-thread confirmation ("decision card") prompts to Telegram with
+                    Approve / Reject buttons that resolve the card.
+                  </span>
+                </label>
+                <label style={{ color: "#374151", display: "grid", gap: 3, fontSize: 13 }}>
+                  <span>Decision actor (Paperclip user ID)</span>
+                  <input
+                    disabled={routingLoading || routingSaving}
+                    onChange={(event) => updateRoutingField("issueInteractionActorUserId", event.currentTarget.value)}
+                    placeholder="Paperclip user ID"
+                    style={{
+                      border: "1px solid #d1d5db",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      padding: "6px 8px",
+                    }}
+                    type="text"
+                    value={routingConfig.issueInteractionActorUserId}
+                  />
+                  <span style={{ color: "#6b7280", fontSize: 12 }}>
+                    Accept / Reject decisions are attributed to this board member; the host re-verifies
+                    they are an active human member. Required for the buttons to act — leave empty to
+                    notify only.
                   </span>
                 </label>
               </>
