@@ -50,6 +50,7 @@ import {
 } from "./command-registry.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, DEFAULT_CONFIG, METRIC_NAMES } from "./constants.js";
+import { telegramTools } from "./tool-declarations.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
@@ -1180,45 +1181,7 @@ export const plugin = definePlugin({
     // --- Phase 1: Escalation support ---
 
     // Register escalate_to_human tool - 3-arg signature with ToolRunContext
-    ctx.tools.register("escalate_to_human", {
-      displayName: "Escalate to Human",
-      description: "Escalate a conversation to a human when you cannot handle it confidently",
-      parametersSchema: {
-        type: "object",
-        properties: {
-          reason: {
-            type: "string",
-            enum: ["low_confidence", "explicit_request", "policy_violation", "unknown_intent"],
-            description: "Why this conversation needs human attention",
-          },
-          conversationSummary: {
-            type: "string",
-            description: "Brief summary of the conversation context and what the user needs",
-          },
-          suggestedActions: {
-            type: "array",
-            items: { type: "string" },
-            description: "Suggested actions the human responder could take",
-          },
-          suggestedReply: {
-            type: "string",
-            description: "A draft reply the human can send or modify",
-          },
-          confidenceScore: {
-            type: "number",
-            minimum: 0,
-            maximum: 1,
-            description: "How confident the agent is (0-1). Lower values indicate greater need for human help",
-          },
-          originChatId: { type: "string" },
-          originThreadId: { type: "string" },
-          originMessageId: { type: "string" },
-          sessionId: { type: "string", description: "Session ID for routing reply back" },
-          transport: { type: "string", enum: ["native", "acp"], description: "Transport type for reply routing" },
-        },
-        required: ["reason", "conversationSummary"],
-      },
-    }, async (params: unknown, runCtx) => {
+    ctx.tools.register("escalate_to_human", telegramTools.escalate_to_human, async (params: unknown, runCtx) => {
       const rt = ensureRuntime();
       if (!rt) return { error: "Telegram plugin is not configured yet" };
       const p = params as Record<string, unknown>;
@@ -1275,81 +1238,21 @@ export const plugin = definePlugin({
     });
 
     // --- Phase 2: Register handoff_to_agent tool ---
-    ctx.tools.register("handoff_to_agent", {
-      displayName: "Handoff to Agent",
-      description: "Hand off work to another agent in this thread",
-      parametersSchema: {
-        type: "object",
-        properties: {
-          targetAgent: { type: "string", description: "Name of agent to hand off to" },
-          reason: { type: "string", description: "Why you're handing off" },
-          contextSummary: { type: "string", description: "Summary for the target agent" },
-          requiresApproval: { type: "boolean", default: true, description: "Wait for human approval before target starts" },
-          chatId: { type: "string", description: "Telegram chat ID" },
-          threadId: { type: "number", description: "Telegram thread ID" },
-        },
-        required: ["targetAgent", "reason", "contextSummary"],
-      },
-    }, async (params: unknown, runCtx) => {
+    ctx.tools.register("handoff_to_agent", telegramTools.handoff_to_agent, async (params: unknown, runCtx) => {
       const rt = ensureRuntime();
       if (!rt) return { error: "Telegram plugin is not configured yet" };
       return handleHandoffToolCall(ctx, rt.token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
     });
 
     // --- Phase 2: Register discuss_with_agent tool ---
-    ctx.tools.register("discuss_with_agent", {
-      displayName: "Discuss with Agent",
-      description: "Start a back-and-forth conversation with another agent",
-      parametersSchema: {
-        type: "object",
-        properties: {
-          targetAgent: { type: "string", description: "Name of agent to discuss with" },
-          topic: { type: "string", description: "Discussion topic" },
-          initialMessage: { type: "string", description: "First message to send" },
-          maxTurns: { type: "number", default: 10, description: "Maximum conversation turns" },
-          humanCheckpointAt: { type: "number", description: "Pause for human approval at this turn" },
-          chatId: { type: "string", description: "Telegram chat ID" },
-          threadId: { type: "number", description: "Telegram thread ID" },
-        },
-        required: ["targetAgent", "topic", "initialMessage"],
-      },
-    }, async (params: unknown, runCtx) => {
+    ctx.tools.register("discuss_with_agent", telegramTools.discuss_with_agent, async (params: unknown, runCtx) => {
       const rt = ensureRuntime();
       if (!rt) return { error: "Telegram plugin is not configured yet" };
       return handleDiscussToolCall(ctx, rt.token, params as Record<string, unknown>, runCtx.companyId, runCtx.agentId);
     });
 
     // --- Phase 5: Register register_watch tool ---
-    ctx.tools.register("register_watch", {
-      displayName: "Register Watch",
-      description: "Register a proactive watch that monitors entities and sends suggestions",
-      parametersSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Name of the watch" },
-          description: { type: "string", description: "What this watch monitors" },
-          entityType: { type: "string", enum: ["issue", "agent", "company", "custom"], description: "Type of entity to watch" },
-          conditions: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                field: { type: "string" },
-                operator: { type: "string", enum: ["gt", "lt", "eq", "ne", "contains", "exists"] },
-                value: {},
-              },
-              required: ["field", "operator", "value"],
-            },
-            description: "Conditions that trigger the watch",
-          },
-          template: { type: "string", description: "Message template with {{field}} placeholders" },
-          builtinTemplate: { type: "string", enum: ["invoice-overdue", "lead-stale"], description: "Use a built-in template instead" },
-          chatId: { type: "string", description: "Telegram chat ID for suggestions" },
-          threadId: { type: "number", description: "Telegram thread ID for suggestions" },
-        },
-        required: ["chatId"],
-      },
-    }, async (params: unknown, runCtx) => {
+    ctx.tools.register("register_watch", telegramTools.register_watch, async (params: unknown, runCtx) => {
       return handleRegisterWatch(ctx, params as Record<string, unknown>, runCtx.companyId);
     });
 
