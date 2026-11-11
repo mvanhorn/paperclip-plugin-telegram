@@ -1,5 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./constants.js";
+import { telegramTools } from "./tool-declarations.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -98,32 +99,7 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "*/15 * * * *",
     },
   ],
-  tools: [
-    {
-      name: "escalate_to_human",
-      displayName: "Escalate to Human",
-      description: "Escalate a conversation to a human when you cannot handle it confidently",
-      parametersSchema: { type: "object" },
-    },
-    {
-      name: "handoff_to_agent",
-      displayName: "Handoff to Agent",
-      description: "Hand off work to another agent in this thread",
-      parametersSchema: { type: "object" },
-    },
-    {
-      name: "discuss_with_agent",
-      displayName: "Discuss with Agent",
-      description: "Start a back-and-forth conversation with another agent",
-      parametersSchema: { type: "object" },
-    },
-    {
-      name: "register_watch",
-      displayName: "Register Watch",
-      description: "Register a proactive watch that monitors entities and sends suggestions",
-      parametersSchema: { type: "object" },
-    },
-  ],
+  tools: Object.entries(telegramTools).map(([name, declaration]) => ({ name, ...declaration })),
 };
 
 export default manifest;

@@ -250,6 +250,8 @@ The plugin stores the resulting board API token as a Paperclip company secret an
 | `discuss_with_agent` | 2 | Start a back-and-forth conversation with another agent |
 | `register_watch` | 5 | Register a proactive watch that monitors entities and sends suggestions |
 
+The manifest and worker share the input schemas in `src/tool-declarations.ts`. Each schema lists required arguments and rejects unknown top-level fields. All four tools declare `riskLevel: "write"` because they send messages, start agent work, or save watches. Hosts that support this optional metadata use it for access policies; older hosts retain their existing risk inference. The declaration does not grant access or bypass approval gates.
+
 ## Comparison with PR #407
 
 | Feature | PR #407 | This plugin |
