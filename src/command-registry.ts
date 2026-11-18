@@ -2,6 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction, answerCallbackQuery, editMessage } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import { validateCommandDefinition } from "./command-definition-validation.js";
+import { checkHttpRequestUrl, normalizeHostAllowlist } from "./http-host-policy.js";
 
 // --- Types ---
 
@@ -116,6 +117,15 @@ type ParkedWorkflow = {
 
 function approvalStateKey(approvalId: string): string {
   return `cmd_approval_${approvalId}`;
+}
+
+// --- http_request host policy ---
+
+let httpRequestAllowedHosts: string[] = [];
+
+/** Set from the worker whenever configuration is applied. Empty = deny all. */
+export function setHttpRequestAllowedHosts(hosts: unknown): void {
+  httpRequestAllowedHosts = normalizeHostAllowlist(hosts);
 }
 
 // --- Built-in commands ---
@@ -457,10 +467,13 @@ async function executeStep(
     }
 
     case "http_request": {
-      const url = interpolate(step.url);
+      const check = checkHttpRequestUrl(interpolate(step.url), httpRequestAllowedHosts);
+      if (!check.ok) throw new Error(check.error);
+      const url = check.url;
       const body = step.body ? interpolate(step.body) : undefined;
       const res = await ctx.http.fetch(url, {
         method: step.method,
+        redirect: "error",
         headers: step.headers ? Object.fromEntries(
           Object.entries(step.headers).map(([k, v]) => [k, interpolate(v)]),
         ) : undefined,

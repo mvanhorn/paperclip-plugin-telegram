@@ -7,7 +7,7 @@ const baseConfig = {
 };
 
 describe("isTelegramUpdateAllowed", () => {
-  it("allows all updates when allowlists are empty", () => {
+  it("blocks all updates when allowlists are empty (fail closed)", () => {
     expect(isTelegramUpdateAllowed(baseConfig, {
       update_id: 1,
       message: {
@@ -16,7 +16,7 @@ describe("isTelegramUpdateAllowed", () => {
         chat: { id: 456, type: "private" },
         text: "/status",
       },
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it("blocks messages from users outside the user allowlist", () => {
@@ -132,8 +132,8 @@ describe("validateTelegramAllowlists", () => {
       allowedTelegramUserIds: "123",
       allowedTelegramChatIds: "-1001",
     })).toEqual([
-      "allowedTelegramUserIds must be an array of Telegram ID strings. Leave it empty to allow any user.",
-      "allowedTelegramChatIds must be an array of Telegram ID strings. Leave it empty to allow any chat.",
+      "allowedTelegramUserIds must be an array of Telegram ID strings. At least one of allowedTelegramUserIds / allowedTelegramChatIds must be non-empty or all incoming Telegram updates are ignored.",
+      "allowedTelegramChatIds must be an array of Telegram ID strings. At least one of allowedTelegramUserIds / allowedTelegramChatIds must be non-empty or all incoming Telegram updates are ignored.",
     ]);
   });
 });

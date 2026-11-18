@@ -31,7 +31,7 @@ export function validateTelegramAllowlists(config: TelegramAllowlistConfig): str
   for (const key of ["allowedTelegramUserIds", "allowedTelegramChatIds"] as const) {
     const value = config[key];
     if (value === undefined || Array.isArray(value)) continue;
-    errors.push(`${key} must be an array of Telegram ID strings. Leave it empty to allow any ${key === "allowedTelegramUserIds" ? "user" : "chat"}.`);
+    errors.push(`${key} must be an array of Telegram ID strings. At least one of allowedTelegramUserIds / allowedTelegramChatIds must be non-empty or all incoming Telegram updates are ignored.`);
   }
   return errors;
 }
@@ -43,8 +43,9 @@ export function isTelegramUpdateAllowed(
   const allowedUserIds = normalizeAllowlist(config.allowedTelegramUserIds);
   const allowedChatIds = normalizeAllowlist(config.allowedTelegramChatIds);
 
+  // Fail closed: with no allowlist configured nobody may drive the bot.
   if (allowedUserIds.size === 0 && allowedChatIds.size === 0) {
-    return true;
+    return false;
   }
 
   const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
@@ -59,4 +60,9 @@ export function isTelegramUpdateAllowed(
   }
 
   return true;
+}
+
+export function hasAnyAllowlist(config: TelegramAllowlistConfig): boolean {
+  return normalizeAllowlist(config.allowedTelegramUserIds).size > 0
+    || normalizeAllowlist(config.allowedTelegramChatIds).size > 0;
 }

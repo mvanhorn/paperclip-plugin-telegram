@@ -45,7 +45,7 @@ function mockCtx(): PluginContext {
   } as unknown as PluginContext;
 }
 
-const config = { enableCommands: true } as Parameters<typeof handleUpdate>[2];
+const config = { enableCommands: true, allowedTelegramUserIds: ["42"] } as Parameters<typeof handleUpdate>[2];
 const baseUrl = "http://localhost:3100";
 
 function commandUpdate(updateId: number): Parameters<typeof handleUpdate>[3] {

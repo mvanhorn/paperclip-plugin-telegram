@@ -194,8 +194,9 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 | `notifyOnAgentError` | No | Send agent failure notifications (default: true) |
 | `notifyOnAgentRunStarted` | No | Send agent run-start lifecycle notifications (default: false) |
 | `notifyOnAgentRunFinished` | No | Send agent run-finish lifecycle notifications (default: false) |
-| `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. Empty means any user is allowed |
-| `allowedTelegramChatIds` | No | Optional allowlist of Telegram chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
+| `allowedTelegramUserIds` | Yes* | Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. *At least one of the two allowlists must be set; if both are empty, **all incoming updates are ignored** (fail-closed) |
+| `allowedTelegramChatIds` | Yes* | Telegram chat IDs where commands, inbound replies, media intake, and inline buttons are accepted (see `allowedTelegramUserIds`) |
+| `allowedHttpRequestHosts` | No | Hostnames custom-command `http_request` steps may call (`api.example.com`, `*.example.com`, `host:port`). https only. Empty (default) blocks all `http_request` steps |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
@@ -213,7 +214,7 @@ Before filing a bug, confirm which Paperclip host this plugin is actually talkin
 
 ### Inbound security allowlists
 
-Telegram does not provide a BotFather setting to disable direct messages while still allowing group use. To safely enable `enableCommands` or `enableInbound`, configure one or both allowlists:
+Telegram does not provide a BotFather setting to disable direct messages while still allowing group use. This fork is **fail-closed**: with both allowlists empty, every incoming Telegram update is ignored and plugin health shows `degraded`. Configure one or both allowlists:
 
 - `allowedTelegramUserIds`: who may interact with the bot
 - `allowedTelegramChatIds`: where interactions are accepted

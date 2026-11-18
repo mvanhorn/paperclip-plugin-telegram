@@ -27,6 +27,7 @@ export const DEFAULT_CONFIG = {
   enableInbound: true,
   allowedTelegramUserIds: [] as string[],
   allowedTelegramChatIds: [] as string[],
+  allowedHttpRequestHosts: [] as string[],
   digestMode: "off" as "off" | "daily" | "bidaily" | "tridaily",
   dailyDigestTime: "09:00",
   bidailySecondTime: "17:00",
