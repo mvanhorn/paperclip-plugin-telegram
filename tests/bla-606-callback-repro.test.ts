@@ -68,7 +68,7 @@ const DEFAULT_CONFIG_FIELDS = {
   notifyOnAgentRunFinished: false,
   enableCommands: true,
   enableInbound: true,
-  allowedTelegramUserIds: [],
+  allowedTelegramUserIds: ["555"],
   allowedTelegramChatIds: [],
   digestMode: "off" as const,
   dailyDigestTime: "",

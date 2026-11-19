@@ -149,7 +149,7 @@ describe("worker deliveries-only bootstrap", () => {
 
   it("onConfigChanged attributes a single-company delivery and builds the runtime", async () => {
     const { plugin } = await import("../src/worker.js");
-    const companyConfig = { telegramBotTokenRef: "ref-a", notifyOnIssueCreated: true, defaultChatId: "chat-a" };
+    const companyConfig = { telegramBotTokenRef: "ref-a", notifyOnIssueCreated: true, defaultChatId: "chat-a", allowedTelegramUserIds: ["1"] };
     const { ctx, registered } = makeCtx({
       companies: [{ id: "company-a" }],
       configByCompany: { "company-a": companyConfig },
@@ -409,8 +409,8 @@ describe("worker deliveries-only bootstrap", () => {
   // use the rotated token.
   it("never starts a second getUpdates call when a token rotates while one is in flight", async () => {
     const { plugin } = await import("../src/worker.js");
-    const configA = { telegramBotTokenRef: "ref-a", enableInbound: true, enableCommands: true };
-    const configB = { telegramBotTokenRef: "ref-b", enableInbound: true, enableCommands: true };
+    const configA = { telegramBotTokenRef: "ref-a", enableInbound: true, enableCommands: true, allowedTelegramChatIds: ["111"] };
+    const configB = { telegramBotTokenRef: "ref-b", enableInbound: true, enableCommands: true, allowedTelegramChatIds: ["111"] };
     const { ctx } = makeCtx({
       companies: [{ id: "company-a" }],
       configByCompany: { "company-a": configA },

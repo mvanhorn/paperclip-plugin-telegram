@@ -29,7 +29,7 @@ describe("polling invocation lifetime", () => {
       { id: "company-b", name: "Company B" },
       { id: "company-c", name: "Company C" },
     ];
-    const config = { telegramBotTokenRef: "test-reference", enableCommands: true, enableInbound: true };
+    const config = { telegramBotTokenRef: "test-reference", enableCommands: true, enableInbound: true, allowedTelegramUserIds: ["123"] };
     let heldDelivery: Rpc | undefined;
     let deliveryB: Promise<Rpc> | undefined;
     let transientLookupFailure = false;

@@ -96,6 +96,7 @@ type TelegramAccessConfig = {
   enableInbound: boolean;
   allowedTelegramUserIds: string[];
   allowedTelegramChatIds: string[];
+  allowedHttpRequestHosts: string[];
 };
 
 type TelegramMediaConfig = {
@@ -162,6 +163,7 @@ const DEFAULT_ACCESS_CONFIG: TelegramAccessConfig = {
   enableInbound: true,
   allowedTelegramUserIds: [],
   allowedTelegramChatIds: [],
+  allowedHttpRequestHosts: [],
 };
 
 const DEFAULT_MEDIA_CONFIG: TelegramMediaConfig = {
@@ -310,6 +312,7 @@ function extractAccessConfig(config: Record<string, unknown>): TelegramAccessCon
     enableInbound: asBoolean(config.enableInbound, DEFAULT_ACCESS_CONFIG.enableInbound),
     allowedTelegramUserIds: asStringArray(config.allowedTelegramUserIds),
     allowedTelegramChatIds: asStringArray(config.allowedTelegramChatIds),
+    allowedHttpRequestHosts: asStringArray(config.allowedHttpRequestHosts),
   };
 }
 
@@ -1502,7 +1505,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             placeholder="6395513943"
             value={accessConfig.allowedTelegramUserIds}
           >
-            Optional. One Telegram user ID per line. Leave empty to allow any user. Applies to commands, inbound replies, media intake, and button callbacks.
+            Required (this or chat IDs). One Telegram user ID per line. If both lists are empty, every incoming update is ignored. Applies to commands, inbound replies, media intake, and button callbacks.
           </ArrayField>
           <ArrayField
             disabled={accessLoading || accessSaving}
@@ -1513,7 +1516,18 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             placeholder="-1003800613668"
             value={accessConfig.allowedTelegramChatIds}
           >
-            Optional. One chat ID per line. Use private DM IDs and/or private group IDs. If both user and chat allowlists are set, both must match.
+            Required (this or user IDs). One chat ID per line. Use private DM IDs and/or private group IDs. If both user and chat allowlists are set, both must match.
+          </ArrayField>
+          <ArrayField
+            disabled={accessLoading || accessSaving}
+            emptyValueLabel="No hosts allowed (http_request steps are blocked)"
+            label="Allowed hosts for custom-command http_request"
+            newItemLabel="Add host"
+            onChange={(value) => updateAccessField("allowedHttpRequestHosts", value)}
+            placeholder="api.example.com"
+            value={accessConfig.allowedHttpRequestHosts}
+          >
+            One hostname per line (e.g. api.example.com, *.example.com, api.example.com:8443). Only https is allowed. Leave empty to block all http_request steps.
           </ArrayField>
         </div>
 

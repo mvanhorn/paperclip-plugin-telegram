@@ -45,6 +45,7 @@ import {
 import {
   handleCommandsCommand,
   tryCustomCommand,
+  setHttpRequestAllowedHosts,
   isWorkflowApprovalCallback,
   resolveWorkflowApprovalCallback,
 } from "./command-registry.js";
@@ -52,7 +53,8 @@ import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
 import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, DEFAULT_CONFIG, METRIC_NAMES } from "./constants.js";
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
-import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
+import { hasAnyAllowlist, isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
+import { validateHostAllowlist } from "./http-host-policy.js";
 import { normalizeSecretRef, validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { isWorking } from "./agent-status.js";
@@ -85,6 +87,7 @@ type TelegramConfig = {
   enableInbound: boolean;
   allowedTelegramUserIds: string[];
   allowedTelegramChatIds: string[];
+  allowedHttpRequestHosts: string[];
   digestMode: "off" | "daily" | "bidaily" | "tridaily";
   dailyDigestTime: string;
   bidailySecondTime: string;
@@ -613,6 +616,13 @@ async function bootstrapRuntime(
   }
 
   runtime = { companyId, config, token, baseUrl, publicUrl };
+  setHttpRequestAllowedHosts(config.allowedHttpRequestHosts);
+
+  if ((config.enableCommands || config.enableInbound) && !hasAnyAllowlist(config)) {
+    const message = "No Telegram allowlist configured: all incoming updates are ignored. Set allowedTelegramUserIds and/or allowedTelegramChatIds.";
+    ctx.logger.warn(message, { companyId });
+    runtimeHealth = { status: "degraded", message };
+  }
 
   // --- Register bot commands with Telegram ---
   if (config.enableCommands) {
@@ -1426,6 +1436,10 @@ export const plugin = definePlugin({
     const allowlistErrors = validateTelegramAllowlists(config);
     if (allowlistErrors.length > 0) {
       return { ok: false, errors: allowlistErrors };
+    }
+    const hostErrors = validateHostAllowlist((config as Record<string, unknown>).allowedHttpRequestHosts);
+    if (hostErrors.length > 0) {
+      return { ok: false, errors: hostErrors };
     }
     const topicErrors = validateConfiguredTopicIds(config as Record<string, unknown>);
     if (topicErrors.length > 0) {
